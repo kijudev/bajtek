@@ -22,7 +22,9 @@ final class SyntaxError extends RuntimeException {
 final class Lexer {
 
     private final String source;
-    private int pos = 0, line = 1, column = 1;
+    private int pos = 0,
+        line = 1,
+        column = 1;
 
     Lexer(String source) {
         this.source = source;
@@ -76,33 +78,98 @@ final class Lexer {
 
             char ch = advance();
 
-            Kind kind =
-                    switch (ch) {
-                        case '(' -> Kind.PARENL;
-                        case ')' -> Kind.PARENR;
-                        default -> {
-                            if (Character.isDigit(ch)) {
-                                while (Character.isDigit(peek())) {
-                                    advance();
-                                }
-
-                                yield Kind.NUMBER;
-                            }
-
-                            if (isSymbolicChar(ch)) {
-                                while (isSymbolicChar(peek())) {
-                                    advance();
-                                }
-
-                                yield Kind.SYMBOL;
-                            }
-
-                            throw new SyntaxError("unexpected character", l, c);
+            Kind kind = switch (ch) {
+                case '(' -> Kind.PARENL;
+                case ')' -> Kind.PARENR;
+                default -> {
+                    if (Character.isDigit(ch)) {
+                        while (Character.isDigit(peek())) {
+                            advance();
                         }
-                    };
+
+                        yield Kind.NUMBER;
+                    }
+
+                    if (isSymbolicChar(ch)) {
+                        while (isSymbolicChar(peek())) {
+                            advance();
+                        }
+
+                        yield Kind.SYMBOL;
+                    }
+
+                    throw new SyntaxError("unexpected character", l, c);
+                }
+            };
 
             out.add(new Token(kind, source.substring(start, pos), l, c));
         }
+    }
+}
+
+sealed interface Sexpr permits Atom, Number, Slist {}
+
+record Atom(String name) implements Sexpr {}
+
+record Number(int value) implements Sexpr {}
+
+record Slist(List<Sexpr> items) implements Sexpr {
+    Slist {
+        items = List.copyOf(items);
+    }
+}
+
+String sexprToString(Sexpr sexpr) {
+    return switch (sexpr) {
+        case Atom a -> a.name();
+        case Number n -> Integer.toString(n.value());
+        case Slist s -> "(" +
+            s
+                .items()
+                .stream()
+                .map(x -> sexprToString(x))
+                .collect(Collectors.joining(" ", "(", ")"));
+    };
+}
+
+final class Parser {
+
+    private final List<Token> tokens;
+    private int pos = 0;
+
+    Parser(List<Token> tokens) {
+        this.tokens = tokens;
+    }
+
+    private Token peek() {
+        return tokens.get(pos);
+    }
+
+    private Token advance() {
+        var token = peek();
+        pos++;
+        return token;
+    }
+
+    Sexpr parse() {
+        var t = advance();
+
+        return switch (t.kind()) {
+            case NUMBER -> new Number(Integer.parseInt(t.text()));
+            case SYMBOL -> new Atom(t.text());
+            case PARENL -> {
+                var items = new ArrayList<Sexpr>();
+
+                while (peek().kind() != Kind.PARENR) {
+                    items.add(parse());
+                }
+
+                advance();
+                yield new Slist(items);
+            }
+            case PARENR -> throw new SyntaxError(t, "unexpected ')'");
+            case EOF -> throw new SyntaxError(t, "unexpected end of input");
+        };
     }
 }
 
