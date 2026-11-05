@@ -1,3 +1,6 @@
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+
 enum Kind {
     PARENL,
     PARENR,
@@ -53,7 +56,7 @@ final class Lexer {
     }
 
     private static boolean isSymbolicChar(char c) {
-        return Character.isLetterOrDigit(c) || "-_+*/<>=!:.".indexOf(c) >= 0;
+        return Character.isLetterOrDigit(c) || "-._#?".indexOf(c) >= 0;
     }
 
     private void skipWhitespace() {
@@ -121,8 +124,8 @@ record Slist(List<Sexpr> items) implements Sexpr {
 
 String sexprToString(Sexpr sexpr) {
     return switch (sexpr) {
-        case Atom a -> a.name();
-        case Number n -> Integer.toString(n.value());
+        case Atom a -> "'" + a.name();
+        case Number n -> "$" + Integer.toString(n.value());
         case Slist s -> "(" +
             s
                 .items()
@@ -173,6 +176,21 @@ final class Parser {
     }
 }
 
-void main() {
-    IO.println("Hello, World!");
+void main(String[] args) throws IOException {
+    String source;
+
+    if (args.length > 0) {
+        source = Files.readString(Paths.get(args[0]));
+    } else {
+        source = new String(System.in.readAllBytes(), StandardCharsets.UTF_8);
+    }
+
+    try {
+        var tokens = new Lexer(source).lex();
+        var sexpr = new Parser(tokens).parse();
+        System.out.println(sexprToString(sexpr));
+    } catch (SyntaxError e) {
+        System.err.println(e.getMessage());
+        System.exit(1);
+    }
 }
