@@ -1,7 +1,9 @@
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
-enum Kind {
+// >---------------------------------------------------------------------- Lexer
+
+enum TokenKind {
     PARENL,
     PARENR,
     SYMBOL,
@@ -9,7 +11,9 @@ enum Kind {
     EOF,
 }
 
-record Token(Kind kind, String text, int line, int column) {}
+record TokenPos(int line, int column) {}
+
+record Token(TokenKind kind, String text, TokenPos pos) {}
 
 final class SyntaxError extends RuntimeException {
 
@@ -18,7 +22,7 @@ final class SyntaxError extends RuntimeException {
     }
 
     SyntaxError(Token token, String message) {
-        this(message, token.line(), token.column());
+        this(message, token.pos().line(), token.pos().column());
     }
 }
 
@@ -75,22 +79,22 @@ final class Lexer {
             int start = pos;
 
             if (isAtEnd()) {
-                out.add(new Token(Kind.EOF, "", l, c));
+                out.add(new Token(TokenKind.EOF, "", new TokenPos(l, c)));
                 return out;
             }
 
             char ch = advance();
 
-            Kind kind = switch (ch) {
-                case '(' -> Kind.PARENL;
-                case ')' -> Kind.PARENR;
+            TokenKind kind = switch (ch) {
+                case '(' -> TokenKind.PARENL;
+                case ')' -> TokenKind.PARENR;
                 default -> {
                     if (Character.isDigit(ch)) {
                         while (Character.isDigit(peek())) {
                             advance();
                         }
 
-                        yield Kind.NUMBER;
+                        yield TokenKind.NUMBER;
                     }
 
                     if (isSymbolicChar(ch)) {
@@ -98,25 +102,35 @@ final class Lexer {
                             advance();
                         }
 
-                        yield Kind.SYMBOL;
+                        yield TokenKind.SYMBOL;
                     }
 
                     throw new SyntaxError("unexpected character", l, c);
                 }
             };
 
-            out.add(new Token(kind, source.substring(start, pos), l, c));
+            out.add(
+                new Token(
+                    kind,
+                    source.substring(start, pos),
+                    new TokenPos(l, c)
+                )
+            );
         }
     }
 }
 
-sealed interface Sexpr permits Atom, Number, Slist {}
+// >-------------------------------------------------------- S-expression Parser
 
-record Atom(String name) implements Sexpr {}
+sealed interface Sexpr permits Atom, Number, Slist {
+    TokenPos pos();
+}
 
-record Number(int value) implements Sexpr {}
+record Atom(String name, TokenPos pos) implements Sexpr {}
 
-record Slist(List<Sexpr> items) implements Sexpr {
+record Number(int value, TokenPos pos) implements Sexpr {}
+
+record Slist(List<Sexpr> items, TokenPos pos) implements Sexpr {
     Slist {
         items = List.copyOf(items);
     }
@@ -158,23 +172,126 @@ final class Parser {
         var t = advance();
 
         return switch (t.kind()) {
-            case NUMBER -> new Number(Integer.parseInt(t.text()));
-            case SYMBOL -> new Atom(t.text());
+            case NUMBER -> new Number(Integer.parseInt(t.text()), t.pos());
+            case SYMBOL -> new Atom(t.text(), t.pos());
             case PARENL -> {
                 var items = new ArrayList<Sexpr>();
 
-                while (peek().kind() != Kind.PARENR) {
+                while (peek().kind() != TokenKind.PARENR) {
                     items.add(parse());
                 }
 
                 advance();
-                yield new Slist(items);
+                yield new Slist(items, t.pos());
             }
             case PARENR -> throw new SyntaxError(t, "unexpected ')'");
             case EOF -> throw new SyntaxError(t, "unexpected end of input");
         };
     }
 }
+
+// >------------------------------------------------------------------ Typed AST
+
+record Module(
+    String name,
+    List<Import> imports,
+    List<TypeDeclaration> declarations,
+    List<Directive> directives,
+    TokenPos pos
+) {}
+
+record Import(String module, TokenPos pos) {}
+
+record TypeDeclaration(
+    String name,
+    List<String> params,
+    DeclarationBody body,
+    List<Directive> directives,
+    TokenPos pos
+) {}
+
+sealed interface DeclarationBody permits Alias, Struct, Union {}
+
+record Alias(TypeExpr target) implements DeclarationBody {}
+
+record Struct(List<Field> fields) implements DeclarationBody {}
+
+record Union(List<Variant> variants) implements DeclarationBody {}
+
+record Field(
+    String name,
+    TypeExpr type,
+    List<Directive> directives,
+    TokenPos pos
+) {}
+
+record Variant(
+    String name,
+    List<Field> fields,
+    List<Directive> directives,
+    TokenPos pos
+) {}
+
+sealed interface TypeExpr
+    permits
+        Ref,
+        S8,
+        S16,
+        S32,
+        S64,
+        U8,
+        U16,
+        U32,
+        U64,
+        Str,
+        Char,
+        Bool,
+        ListGeneric,
+        ArrayGeneric {}
+
+record Ref(
+    String name,
+    List<TypeExpr> args,
+    TokenPos pos
+) implements TypeExpr {}
+
+record S8(TokenPos pos) implements TypeExpr {}
+
+record S16(TokenPos pos) implements TypeExpr {}
+
+record S32(TokenPos pos) implements TypeExpr {}
+
+record S64(TokenPos pos) implements TypeExpr {}
+
+record U8(TokenPos pos) implements TypeExpr {}
+
+record U16(TokenPos pos) implements TypeExpr {}
+
+record U32(TokenPos pos) implements TypeExpr {}
+
+record U64(TokenPos pos) implements TypeExpr {}
+
+record Str(TokenPos pos) implements TypeExpr {}
+
+record Char(TokenPos pos) implements TypeExpr {}
+
+record Bool(TokenPos pos) implements TypeExpr {}
+
+record ListGeneric(TypeExpr items, TokenPos pos) implements TypeExpr {}
+
+record ArrayGeneric(
+    TypeExpr items,
+    int size,
+    TokenPos pos
+) implements TypeExpr {}
+
+sealed interface Directive permits Intrinsic, Pack {}
+
+record Intrinsic(String tag, TokenPos pos) implements Directive {}
+
+record Pack(TokenPos pos) implements Directive {}
+
+// >----------------------------------------------------------------------- Main
 
 void main(String[] args) throws IOException {
     String source;
