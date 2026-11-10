@@ -122,29 +122,29 @@ final class Lexer {
 
 // >-------------------------------------------------------- S-expression Parser
 
-sealed interface Sexpr permits Atom, Number, Slist {
+sealed interface Expr permits AtomExpr, NumberExpr, ListExpr {
     TokenPos pos();
 }
 
-record Atom(String name, TokenPos pos) implements Sexpr {}
+record AtomExpr(String name, TokenPos pos) implements Expr {}
 
-record Number(int value, TokenPos pos) implements Sexpr {}
+record NumberExpr(int value, TokenPos pos) implements Expr {}
 
-record Slist(List<Sexpr> items, TokenPos pos) implements Sexpr {
-    Slist {
+record ListExpr(List<Expr> items, TokenPos pos) implements Expr {
+    ListExpr {
         items = List.copyOf(items);
     }
 }
 
-String sexprToString(Sexpr sexpr) {
-    return switch (sexpr) {
-        case Atom a -> "'" + a.name();
-        case Number n -> "$" + Integer.toString(n.value());
-        case Slist s -> "(" +
+String exprToString(Expr expr) {
+    return switch (expr) {
+        case AtomExpr a -> "'" + a.name();
+        case NumberExpr n -> "$" + Integer.toString(n.value());
+        case ListExpr s -> "(" +
             s
                 .items()
                 .stream()
-                .map(x -> sexprToString(x))
+                .map(x -> exprToString(x))
                 .collect(Collectors.joining(" ", "(", ")"));
     };
 }
@@ -168,21 +168,21 @@ final class Parser {
         return token;
     }
 
-    Sexpr parse() {
+    Expr parse() {
         var t = advance();
 
         return switch (t.kind()) {
-            case NUMBER -> new Number(Integer.parseInt(t.text()), t.pos());
-            case SYMBOL -> new Atom(t.text(), t.pos());
+            case NUMBER -> new NumberExpr(Integer.parseInt(t.text()), t.pos());
+            case SYMBOL -> new AtomExpr(t.text(), t.pos());
             case PARENL -> {
-                var items = new ArrayList<Sexpr>();
+                var items = new ArrayList<Expr>();
 
                 while (peek().kind() != TokenKind.PARENR) {
                     items.add(parse());
                 }
 
                 advance();
-                yield new Slist(items, t.pos());
+                yield new ListExpr(items, t.pos());
             }
             case PARENR -> throw new SyntaxError(t, "unexpected ')'");
             case EOF -> throw new SyntaxError(t, "unexpected end of input");
@@ -192,104 +192,127 @@ final class Parser {
 
 // >------------------------------------------------------------------ Typed AST
 
-record Module(
+record ModuleNode(
     String name,
-    List<Import> imports,
-    List<TypeDeclaration> declarations,
+    List<ImportNode> imports,
+    List<DeclarationNode> declarations,
     List<Directive> directives,
     TokenPos pos
 ) {}
 
-record Import(String module, TokenPos pos) {}
+record ImportNode(String module, TokenPos pos) {}
 
-record TypeDeclaration(
+record DeclarationNode(
     String name,
     List<String> params,
-    DeclarationBody body,
+    KindNode body,
     List<Directive> directives,
     TokenPos pos
 ) {}
 
-sealed interface DeclarationBody permits Alias, Struct, Union {}
+sealed interface KindNode permits AliasKind, StructKind, UnionKind {}
 
-record Alias(TypeExpr target) implements DeclarationBody {}
+record AliasKind(Type target) implements KindNode {}
 
-record Struct(List<Field> fields) implements DeclarationBody {}
+record StructKind(List<FieldType> fields) implements KindNode {}
 
-record Union(List<Variant> variants) implements DeclarationBody {}
+record UnionKind(List<VariantType> variants) implements KindNode {}
 
-record Field(
+record FieldType(
     String name,
-    TypeExpr type,
+    Type type,
     List<Directive> directives,
     TokenPos pos
 ) {}
 
-record Variant(
+record VariantType(
     String name,
-    List<Field> fields,
+    List<FieldType> fields,
     List<Directive> directives,
     TokenPos pos
 ) {}
 
-sealed interface TypeExpr
+sealed interface Type
     permits
-        Ref,
-        S8,
-        S16,
-        S32,
-        S64,
-        U8,
-        U16,
-        U32,
-        U64,
-        Str,
-        Char,
-        Bool,
-        ListGeneric,
-        ArrayGeneric {}
+        RefType,
+        S8Type,
+        S16Type,
+        S32Type,
+        S64Type,
+        U8Type,
+        U16Type,
+        U32Type,
+        U64Type,
+        StrType,
+        CharType,
+        BoolType,
+        ListType,
+        ArrayType {}
 
-record Ref(
-    String name,
-    List<TypeExpr> args,
-    TokenPos pos
-) implements TypeExpr {}
+record RefType(String name, List<Type> args, TokenPos pos) implements Type {}
 
-record S8(TokenPos pos) implements TypeExpr {}
+record S8Type(TokenPos pos) implements Type {}
 
-record S16(TokenPos pos) implements TypeExpr {}
+record S16Type(TokenPos pos) implements Type {}
 
-record S32(TokenPos pos) implements TypeExpr {}
+record S32Type(TokenPos pos) implements Type {}
 
-record S64(TokenPos pos) implements TypeExpr {}
+record S64Type(TokenPos pos) implements Type {}
 
-record U8(TokenPos pos) implements TypeExpr {}
+record U8Type(TokenPos pos) implements Type {}
 
-record U16(TokenPos pos) implements TypeExpr {}
+record U16Type(TokenPos pos) implements Type {}
 
-record U32(TokenPos pos) implements TypeExpr {}
+record U32Type(TokenPos pos) implements Type {}
 
-record U64(TokenPos pos) implements TypeExpr {}
+record U64Type(TokenPos pos) implements Type {}
 
-record Str(TokenPos pos) implements TypeExpr {}
+record StrType(TokenPos pos) implements Type {}
 
-record Char(TokenPos pos) implements TypeExpr {}
+record CharType(TokenPos pos) implements Type {}
 
-record Bool(TokenPos pos) implements TypeExpr {}
+record BoolType(TokenPos pos) implements Type {}
 
-record ListGeneric(TypeExpr items, TokenPos pos) implements TypeExpr {}
+record ListType(Type items, TokenPos pos) implements Type {}
 
-record ArrayGeneric(
-    TypeExpr items,
-    int size,
-    TokenPos pos
-) implements TypeExpr {}
+record ArrayType(Type items, int size, TokenPos pos) implements Type {}
 
-sealed interface Directive permits Intrinsic, Pack {}
+sealed interface Directive permits IntrinsicDirective, PackDirective {}
 
-record Intrinsic(String tag, TokenPos pos) implements Directive {}
+record IntrinsicDirective(String tag, TokenPos pos) implements Directive {}
 
-record Pack(TokenPos pos) implements Directive {}
+record PackDirective(TokenPos pos) implements Directive {}
+
+// Module elaborateModule(Sexpr sexpr) {}
+
+Type elaborateAtomType(AtomExpr atom) {
+    return switch (atom.name()) {
+        case "s8" -> new S8Type(atom.pos());
+        case "s16" -> new S16Type(atom.pos());
+        case "s32" -> new S32Type(atom.pos());
+        case "s64" -> new S64Type(atom.pos());
+        case "u8" -> new U8Type(atom.pos());
+        case "u16" -> new U16Type(atom.pos());
+        case "u32" -> new U32Type(atom.pos());
+        case "u64" -> new U64Type(atom.pos());
+        case "str" -> new StrType(atom.pos());
+        case "char" -> new CharType(atom.pos());
+        case "bool" -> new BoolType(atom.pos());
+        default -> new RefType(atom.name(), List.of(), atom.pos());
+    };
+}
+
+Directive elaborateDirective(AtomExpr atom) {
+    return switch (atom.name()) {
+        case "#intrinsic" -> new IntrinsicDirective(atom.name(), atom.pos());
+        case "#pack" -> new PackDirective(atom.pos());
+        default -> throw new SyntaxError(
+            "unknown directive",
+            atom.pos().line(),
+            atom.pos().column()
+        );
+    };
+}
 
 // >----------------------------------------------------------------------- Main
 
@@ -305,7 +328,7 @@ void main(String[] args) throws IOException {
     try {
         var tokens = new Lexer(source).lex();
         var sexpr = new Parser(tokens).parse();
-        System.out.println(sexprToString(sexpr));
+        System.out.println(exprToString(sexpr));
     } catch (SyntaxError e) {
         System.err.println(e.getMessage());
         System.exit(1);
