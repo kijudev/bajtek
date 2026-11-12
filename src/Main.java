@@ -34,7 +34,9 @@ final class SyntaxError extends RuntimeException {
 final class Lexer {
 
     private final String source;
-    private int pos = 0, line = 1, column = 1;
+    private int pos = 0,
+        line = 1,
+        column = 1;
 
     Lexer(String source) {
         this.source = source;
@@ -142,13 +144,18 @@ final class Lexer {
             }
 
             sb.append(
-                    switch (advance()) {
-                        case 'n' -> '\n';
-                        case 't' -> '\t';
-                        case '"' -> '"';
-                        case '\\' -> '\\';
-                        default -> throw new SyntaxError("unknown escape sequence", el, ec);
-                    });
+                switch (advance()) {
+                    case 'n' -> '\n';
+                    case 't' -> '\t';
+                    case '"' -> '"';
+                    case '\\' -> '\\';
+                    default -> throw new SyntaxError(
+                        "unknown escape sequence",
+                        el,
+                        ec
+                    );
+                }
+            );
         }
     }
 
@@ -169,36 +176,47 @@ final class Lexer {
             char ch = advance();
 
             if (ch == '"') {
-                out.add(new Token(TokenKind.STRING, lexString(l, c), new TokenPos(l, c)));
+                out.add(
+                    new Token(
+                        TokenKind.STRING,
+                        lexString(l, c),
+                        new TokenPos(l, c)
+                    )
+                );
                 continue;
             }
 
-            TokenKind kind =
-                    switch (ch) {
-                        case '(' -> TokenKind.PARENL;
-                        case ')' -> TokenKind.PARENR;
-                        default -> {
-                            if (Character.isDigit(ch)) {
-                                while (Character.isDigit(peek())) {
-                                    advance();
-                                }
-
-                                yield TokenKind.NUMBER;
-                            }
-
-                            if (isSymbolicChar(ch)) {
-                                while (isSymbolicChar(peek())) {
-                                    advance();
-                                }
-
-                                yield TokenKind.SYMBOL;
-                            }
-
-                            throw new SyntaxError("unexpected character", l, c);
+            TokenKind kind = switch (ch) {
+                case '(' -> TokenKind.PARENL;
+                case ')' -> TokenKind.PARENR;
+                default -> {
+                    if (Character.isDigit(ch)) {
+                        while (Character.isDigit(peek())) {
+                            advance();
                         }
-                    };
 
-            out.add(new Token(kind, source.substring(start, pos), new TokenPos(l, c)));
+                        yield TokenKind.NUMBER;
+                    }
+
+                    if (isSymbolicChar(ch)) {
+                        while (isSymbolicChar(peek())) {
+                            advance();
+                        }
+
+                        yield TokenKind.SYMBOL;
+                    }
+
+                    throw new SyntaxError("unexpected character", l, c);
+                }
+            };
+
+            out.add(
+                new Token(
+                    kind,
+                    source.substring(start, pos),
+                    new TokenPos(l, c)
+                )
+            );
         }
     }
 }
@@ -225,19 +243,20 @@ String exprToString(Expr expr) {
     return switch (expr) {
         case AtomExpr a -> "'" + a.name();
         case NumberExpr n -> "$" + Integer.toString(n.value());
-        case StringExpr s ->
-                "\""
-                        + s.value()
-                                .replace("\\", "\\\\")
-                                .replace("\"", "\\\"")
-                                .replace("\n", "\\n")
-                                .replace("\t", "\\t")
-                        + "\"";
-        case ListExpr s ->
-                "("
-                        + s.items().stream()
-                                .map(x -> exprToString(x))
-                                .collect(Collectors.joining(" ", "(", ")"));
+        case StringExpr s -> "\"" +
+            s
+                .value()
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\t", "\\t") +
+            "\"";
+        case ListExpr s -> "(" +
+            s
+                .items()
+                .stream()
+                .map(x -> exprToString(x))
+                .collect(Collectors.joining(" ", "(", ")"));
     };
 }
 
@@ -298,11 +317,12 @@ final class Parser {
 // >------------------------------------------------------------------ Typed AST
 
 record Module(
-        String name,
-        List<Import> imports,
-        List<Declaration> declarations,
-        List<Directive> directives,
-        TokenPos pos) {}
+    String name,
+    List<Import> imports,
+    List<Declaration> declarations,
+    List<Directive> directives,
+    TokenPos pos
+) {}
 
 record Import(String module, TokenPos pos) {}
 
@@ -315,31 +335,46 @@ sealed interface Declaration permits Alias, Struct, Union {
 }
 
 record Alias(
-        String name, List<String> params, Type target, List<Directive> directives, TokenPos pos)
-        implements Declaration {}
+    String name,
+    List<String> params,
+    Type target,
+    List<Directive> directives,
+    TokenPos pos
+) implements Declaration {}
 
 record Struct(
-        String name,
-        List<String> params,
-        List<StructField> fields,
-        List<Directive> directives,
-        TokenPos pos)
-        implements Declaration {}
+    String name,
+    List<String> params,
+    List<StructField> fields,
+    List<Directive> directives,
+    TokenPos pos
+) implements Declaration {}
 
-record StructField(String name, Type type, List<Directive> directives, TokenPos pos) {}
+record StructField(
+    String name,
+    Type type,
+    List<Directive> directives,
+    TokenPos pos
+) {}
 
 record Union(
-        String name,
-        List<String> params,
-        List<UnionVariant> variants,
-        Type tag,
-        List<Directive> directives,
-        TokenPos pos)
-        implements Declaration {}
+    String name,
+    List<String> params,
+    List<UnionVariant> variants,
+    Type tag,
+    List<Directive> directives,
+    TokenPos pos
+) implements Declaration {}
 
-record UnionVariant(String name, Type type, List<Directive> directives, TokenPos pos) {}
+record UnionVariant(
+    String name,
+    Type type,
+    List<Directive> directives,
+    TokenPos pos
+) {}
 
-sealed interface Type permits RefType, NumberType, BytesType, BitsType, ArrayType, SliceType {}
+sealed interface Type
+    permits RefType, NumberType, BytesType, BitsType, ArrayType, SliceType {}
 
 record RefType(String name, List<Type> args, TokenPos pos) implements Type {}
 
@@ -354,7 +389,8 @@ record ArrayType(Type element, Type size, TokenPos pos) implements Type {}
 
 record SliceType(Type element, Type size, TokenPos pos) implements Type {}
 
-sealed interface Directive permits NativeDirective, PackDirective, EndianDirective {}
+sealed interface Directive
+    permits NativeDirective, PackDirective, EndianDirective {}
 
 record NativeDirective(String arg, TokenPos pos) implements Directive {}
 
@@ -397,12 +433,17 @@ Module elaborateModule(Expr expr) throws SyntaxError {
     var declarations = new ArrayList<Declaration>();
 
     for (var item : thirdList.items()) {
-        if (item instanceof ListExpr itemList
-                && !itemList.items().isEmpty()
-                && itemList.items().get(0) instanceof AtomExpr keyword
-                && keyword.name().equals("import")) {
+        if (
+            item instanceof ListExpr itemList &&
+            !itemList.items().isEmpty() &&
+            itemList.items().get(0) instanceof AtomExpr keyword &&
+            keyword.name().equals("import")
+        ) {
             if (!declarations.isEmpty()) {
-                throw new SyntaxError("import must come before declarations", item.pos());
+                throw new SyntaxError(
+                    "import must come before declarations",
+                    item.pos()
+                );
             }
 
             imports.add(elaborateImport(itemList));
@@ -413,7 +454,13 @@ Module elaborateModule(Expr expr) throws SyntaxError {
 
     var directives = elaborateDirectives(list, 3);
 
-    return new Module(name.name(), imports, declarations, directives, list.pos());
+    return new Module(
+        name.name(),
+        imports,
+        declarations,
+        directives,
+        list.pos()
+    );
 }
 
 Import elaborateImport(ListExpr list) throws SyntaxError {
@@ -440,9 +487,11 @@ Import elaborateImport(ListExpr list) throws SyntaxError {
 }
 
 Declaration elaborateDeclaration(Expr expr) throws SyntaxError {
-    if (!(expr instanceof ListExpr list)
-            || list.items().isEmpty()
-            || !(list.items().get(0) instanceof AtomExpr keyword)) {
+    if (
+        !(expr instanceof ListExpr list) ||
+        list.items().isEmpty() ||
+        !(list.items().get(0) instanceof AtomExpr keyword)
+    ) {
         throw new SyntaxError("invalid declaration", expr.pos());
     }
 
@@ -468,7 +517,10 @@ DeclarationHead elaborateDeclarationHead(Expr expr) throws SyntaxError {
             var params = new ArrayList<String>();
             for (var item : list.items()) {
                 if (!(item instanceof AtomExpr atom)) {
-                    throw new SyntaxError("invalid declaration name", item.pos());
+                    throw new SyntaxError(
+                        "invalid declaration name",
+                        item.pos()
+                    );
                 }
 
                 params.add(atom.name());
@@ -477,11 +529,15 @@ DeclarationHead elaborateDeclarationHead(Expr expr) throws SyntaxError {
             var name = params.removeFirst();
             yield new DeclarationHead(name, params);
         }
-        default -> throw new SyntaxError("invalid declaration name", expr.pos());
+        default -> throw new SyntaxError(
+            "invalid declaration name",
+            expr.pos()
+        );
     };
 }
 
-List<Directive> elaborateDirectives(ListExpr list, int from) throws SyntaxError {
+List<Directive> elaborateDirectives(ListExpr list, int from)
+    throws SyntaxError {
     var directives = new ArrayList<Directive>();
 
     for (int i = from; i < list.items().size(); i++) {
@@ -510,7 +566,13 @@ Alias elaborateAlias(ListExpr list) throws SyntaxError {
     var target = elaborateType(list.items().get(2));
     var directives = elaborateDirectives(list, 3);
 
-    return new Alias(head.name(), head.params(), target, directives, list.pos());
+    return new Alias(
+        head.name(),
+        head.params(),
+        target,
+        directives,
+        list.pos()
+    );
 }
 
 Struct elaborateStruct(ListExpr list) throws SyntaxError {
@@ -547,7 +609,13 @@ Struct elaborateStruct(ListExpr list) throws SyntaxError {
 
     var directives = elaborateDirectives(list, 3);
 
-    return new Struct(head.name(), head.params(), fields, directives, list.pos());
+    return new Struct(
+        head.name(),
+        head.params(),
+        fields,
+        directives,
+        list.pos()
+    );
 }
 
 StructField elaborateStructField(ListExpr list) throws SyntaxError {
@@ -606,12 +674,13 @@ Union elaborateUnion(ListExpr list) throws SyntaxError {
     // The tag type is always u8 for now, but we may want to make it configurable in the future.
     // This also means that the prelude has to define the u8 type.
     return new Union(
-            head.name(),
-            head.params(),
-            variants,
-            new RefType("u8", List.of(), list.pos()),
-            directives,
-            list.pos());
+        head.name(),
+        head.params(),
+        variants,
+        new RefType("u8", List.of(), list.pos()),
+        directives,
+        list.pos()
+    );
 }
 
 UnionVariant elaborateUnionVariant(ListExpr list) throws SyntaxError {
@@ -701,11 +770,10 @@ Type elaborateType(Expr expr) throws SyntaxError {
 
 Directive elaborateDirective(Expr expr) throws SyntaxError {
     return switch (expr) {
-        case AtomExpr atom ->
-                switch (atom.name()) {
-                    case "#pack" -> new PackDirective(atom.pos());
-                    default -> throw new SyntaxError("invalid directive", atom.pos());
-                };
+        case AtomExpr atom -> switch (atom.name()) {
+            case "#pack" -> new PackDirective(atom.pos());
+            default -> throw new SyntaxError("invalid directive", atom.pos());
+        };
         case ListExpr list -> {
             if (list.items().size() < 2) {
                 throw new SyntaxError("invalid directive", list.pos());
@@ -721,23 +789,41 @@ Directive elaborateDirective(Expr expr) throws SyntaxError {
             yield switch (directive.name()) {
                 case "#native" -> {
                     if (!(second instanceof AtomExpr arg)) {
-                        throw new SyntaxError("invalid directive", second.pos());
+                        throw new SyntaxError(
+                            "invalid directive",
+                            second.pos()
+                        );
                     }
 
                     yield new NativeDirective(arg.name(), list.pos());
                 }
                 case "#endian" -> {
                     if (!(second instanceof AtomExpr arg)) {
-                        throw new SyntaxError("invalid directive", second.pos());
+                        throw new SyntaxError(
+                            "invalid directive",
+                            second.pos()
+                        );
                     }
 
                     yield switch (arg.name()) {
-                        case "little" -> new EndianDirective(Endian.LITTLE, list.pos());
-                        case "big" -> new EndianDirective(Endian.BIG, list.pos());
-                        default -> throw new SyntaxError("invalid directive", arg.pos());
+                        case "little" -> new EndianDirective(
+                            Endian.LITTLE,
+                            list.pos()
+                        );
+                        case "big" -> new EndianDirective(
+                            Endian.BIG,
+                            list.pos()
+                        );
+                        default -> throw new SyntaxError(
+                            "invalid directive",
+                            arg.pos()
+                        );
                     };
                 }
-                default -> throw new SyntaxError("invalid directive", directive.pos());
+                default -> throw new SyntaxError(
+                    "invalid directive",
+                    directive.pos()
+                );
             };
         }
         default -> throw new SyntaxError("invalid directive", expr.pos());
