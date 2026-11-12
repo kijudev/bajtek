@@ -339,7 +339,8 @@ record UnionVariant(
     TokenPos pos
 ) {}
 
-sealed interface Type permits RefType, BytesType, BitsType, ArrayType {}
+sealed interface Type
+    permits RefType, BytesType, BitsType, ArrayType, SliceType {}
 
 record RefType(String name, List<Type> args, TokenPos pos) implements Type {}
 
@@ -347,17 +348,9 @@ record BytesType(int size, TokenPos pos) implements Type {}
 
 record BitsType(int size, TokenPos pos) implements Type {}
 
-record ArrayType(
-    Type element,
-    ArrayLength length,
-    TokenPos pos
-) implements Type {}
+record ArrayType(Type element, int size, TokenPos pos) implements Type {}
 
-sealed interface ArrayLength permits ArrayLengthFixed, ArrayLengthPrefixed {}
-
-record ArrayLengthFixed(int size, TokenPos pos) implements ArrayLength {}
-
-record ArrayLengthPrefixed(Type type, TokenPos pos) implements ArrayLength {}
+record SliceType(Type element, Type size, TokenPos pos) implements Type {}
 
 sealed interface Directive
     permits NativeDirective, PackDirective, EndianDirective {}
@@ -373,7 +366,76 @@ enum Endian {
     BIG,
 }
 
-Directive elaborateDirective(Expr expr) {
+Type elaborateType(Expr expr) throws SyntaxError {
+    return switch (expr) {
+        case AtomExpr atom -> new RefType(atom.name(), List.of(), atom.pos());
+        case ListExpr list -> {
+            if (list.items().size() < 2) {
+                throw new SyntaxError("invalid type", list.pos());
+            }
+
+            var first = list.items().get(0);
+            var second = list.items().get(1);
+
+            if (!(first instanceof AtomExpr type)) {
+                throw new SyntaxError("invalid type", first.pos());
+            }
+
+            yield switch (type.name()) {
+                case "bytes" -> {
+                    if (!(second instanceof NumberExpr arg)) {
+                        throw new SyntaxError("invalid type", second.pos());
+                    }
+
+                    yield new BytesType(arg.value(), list.pos());
+                }
+                case "bits" -> {
+                    if (!(second instanceof NumberExpr arg)) {
+                        throw new SyntaxError("invalid type", second.pos());
+                    }
+
+                    yield new BitsType(arg.value(), list.pos());
+                }
+                case "array" -> {
+                    if (list.items().size() != 3) {
+                        throw new SyntaxError("invalid type", list.pos());
+                    }
+
+                    var element = elaborateType(list.items().get(1));
+                    var size = list.items().get(2);
+
+                    if (!(size instanceof NumberExpr arg)) {
+                        throw new SyntaxError("invalid type", size.pos());
+                    }
+
+                    yield new ArrayType(element, arg.value(), list.pos());
+                }
+                case "slice" -> {
+                    if (list.items().size() != 3) {
+                        throw new SyntaxError("invalid type", list.pos());
+                    }
+
+                    var element = elaborateType(list.items().get(1));
+                    var size = elaborateType(list.items().get(2));
+
+                    yield new SliceType(element, size, list.pos());
+                }
+                default -> {
+                    var args = new ArrayList<Type>();
+
+                    for (int i = 1; i < list.items().size(); i++) {
+                        args.add(elaborateType(list.items().get(i)));
+                    }
+
+                    yield new RefType(type.name(), args, list.pos());
+                }
+            };
+        }
+        default -> throw new SyntaxError("invalid type", expr.pos());
+    };
+}
+
+Directive elaborateDirective(Expr expr) throws SyntaxError {
     return switch (expr) {
         case AtomExpr atom -> switch (atom.name()) {
             case "#pack" -> new PackDirective(atom.pos());
