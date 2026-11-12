@@ -304,15 +304,23 @@ final class Parser {
 
 // >------------------------------------------------------------------ Typed AST
 
-sealed interface Declaration permits Alias, Struct, Union {}
+sealed interface Declaration permits Alias, Struct, Union {
+    String name();
+    List<String> params();
+    TokenPos pos();
+}
 
 record Alias(
+    String name,
+    List<String> params,
     Type target,
     List<Directive> directives,
     TokenPos pos
 ) implements Declaration {}
 
 record Struct(
+    String name,
+    List<String> params,
     List<StructField> fields,
     List<Directive> directives,
     TokenPos pos
@@ -326,6 +334,8 @@ record StructField(
 ) {}
 
 record Union(
+    String name,
+    List<String> params,
     List<UnionVariant> variants,
     Type tag,
     List<Directive> directives,
@@ -340,15 +350,18 @@ record UnionVariant(
 ) {}
 
 sealed interface Type
-    permits RefType, BytesType, BitsType, ArrayType, SliceType {}
+    permits RefType, NumberType, BytesType, BitsType, ArrayType, SliceType {}
 
 record RefType(String name, List<Type> args, TokenPos pos) implements Type {}
+
+// A type-level number, e.g. an array length: (array u32 4) or (numarray 4).
+record NumberType(int value, TokenPos pos) implements Type {}
 
 record BytesType(int size, TokenPos pos) implements Type {}
 
 record BitsType(int size, TokenPos pos) implements Type {}
 
-record ArrayType(Type element, int size, TokenPos pos) implements Type {}
+record ArrayType(Type element, Type size, TokenPos pos) implements Type {}
 
 record SliceType(Type element, Type size, TokenPos pos) implements Type {}
 
@@ -366,13 +379,102 @@ enum Endian {
     BIG,
 }
 
+Declaration elaborateDeclaration(Expr expr) throws SyntaxError {
+    if (
+        !(expr instanceof ListExpr list) ||
+        list.items().isEmpty() ||
+        !(list.items().get(0) instanceof AtomExpr keyword)
+    ) {
+        throw new SyntaxError("invalid declaration", expr.pos());
+    }
+
+    return switch (keyword.name()) {
+        case "type" -> elaborateAlias(list);
+        case "struct" -> elaborateStruct(list);
+        case "union" -> elaborateUnion(list);
+        default -> throw new SyntaxError("invalid declaration", keyword.pos());
+    };
+}
+
+record DeclarationHead(String name, List<String> params) {}
+
+// Either a bare name `foo` or a name with params `(foo T N)`.
+DeclarationHead elaborateDeclarationHead(Expr expr) throws SyntaxError {
+    return switch (expr) {
+        case AtomExpr atom -> new DeclarationHead(atom.name(), List.of());
+        case ListExpr list -> {
+            if (list.items().isEmpty()) {
+                throw new SyntaxError("invalid declaration name", list.pos());
+            }
+
+            var params = new ArrayList<String>();
+            for (var item : list.items()) {
+                if (!(item instanceof AtomExpr atom)) {
+                    throw new SyntaxError(
+                        "invalid declaration name",
+                        item.pos()
+                    );
+                }
+
+                params.add(atom.name());
+            }
+
+            var name = params.removeFirst();
+            yield new DeclarationHead(name, params);
+        }
+        default -> throw new SyntaxError(
+            "invalid declaration name",
+            expr.pos()
+        );
+    };
+}
+
+List<Directive> elaborateDirectives(ListExpr list, int from)
+    throws SyntaxError {
+    var directives = new ArrayList<Directive>();
+
+    for (int i = from; i < list.items().size(); i++) {
+        directives.add(elaborateDirective(list.items().get(i)));
+    }
+
+    return directives;
+}
+
+Alias elaborateAlias(ListExpr list) throws SyntaxError {
+    if (list.items().size() < 3) {
+        throw new SyntaxError("invalid type", list.pos());
+    }
+
+    var first = list.items().get(0);
+
+    if (!(first instanceof AtomExpr firstAtom)) {
+        throw new SyntaxError("invalid type", first.pos());
+    }
+
+    if (!firstAtom.name().equals("type")) {
+        throw new SyntaxError("invalid type", first.pos());
+    }
+
+    var head = elaborateDeclarationHead(list.items().get(1));
+    var target = elaborateType(list.items().get(2));
+    var directives = elaborateDirectives(list, 3);
+
+    return new Alias(
+        head.name(),
+        head.params(),
+        target,
+        directives,
+        list.pos()
+    );
+}
+
 Struct elaborateStruct(ListExpr list) throws SyntaxError {
-    if (list.items().size() < 2) {
+    if (list.items().size() < 3) {
         throw new SyntaxError("invalid struct", list.pos());
     }
 
     var first = list.items().get(0);
-    var second = list.items().get(1);
+    var third = list.items().get(2);
 
     if (!(first instanceof AtomExpr firstAtom)) {
         throw new SyntaxError("invalid struct", first.pos());
@@ -382,12 +484,14 @@ Struct elaborateStruct(ListExpr list) throws SyntaxError {
         throw new SyntaxError("invalid struct", first.pos());
     }
 
-    if (!(second instanceof ListExpr secondList)) {
-        throw new SyntaxError("invalid struct", second.pos());
+    var head = elaborateDeclarationHead(list.items().get(1));
+
+    if (!(third instanceof ListExpr thirdList)) {
+        throw new SyntaxError("invalid struct", third.pos());
     }
 
     var fields = new ArrayList<StructField>();
-    for (var item : secondList.items()) {
+    for (var item : thirdList.items()) {
         if (!(item instanceof ListExpr fieldList)) {
             throw new SyntaxError("invalid struct field", item.pos());
         }
@@ -396,14 +500,15 @@ Struct elaborateStruct(ListExpr list) throws SyntaxError {
         fields.add(field);
     }
 
-    var directives = new ArrayList<Directive>();
-    for (int i = 2; i < list.items().size(); i++) {
-        var item = list.items().get(i);
-        var directive = elaborateDirective(item);
-        directives.add(directive);
-    }
+    var directives = elaborateDirectives(list, 3);
 
-    return new Struct(fields, directives, list.pos());
+    return new Struct(
+        head.name(),
+        head.params(),
+        fields,
+        directives,
+        list.pos()
+    );
 }
 
 StructField elaborateStructField(ListExpr list) throws SyntaxError {
@@ -420,19 +525,13 @@ StructField elaborateStructField(ListExpr list) throws SyntaxError {
 
     var name = firstAtom.name();
     var type = elaborateType(second);
-    var directives = new ArrayList<Directive>();
-
-    for (int i = 2; i < list.items().size(); i++) {
-        var item = list.items().get(i);
-        var directive = elaborateDirective(item);
-        directives.add(directive);
-    }
+    var directives = elaborateDirectives(list, 2);
 
     return new StructField(name, type, directives, list.pos());
 }
 
 Union elaborateUnion(ListExpr list) throws SyntaxError {
-    if (list.items().size() < 2) {
+    if (list.items().size() < 3) {
         throw new SyntaxError("invalid union", list.pos());
     }
 
@@ -446,6 +545,8 @@ Union elaborateUnion(ListExpr list) throws SyntaxError {
     if (!firstAtom.name().equals("union")) {
         throw new SyntaxError("invalid union", first.pos());
     }
+
+    var head = elaborateDeclarationHead(list.items().get(1));
 
     if (!(third instanceof ListExpr thirdList)) {
         throw new SyntaxError("invalid union", third.pos());
@@ -461,16 +562,13 @@ Union elaborateUnion(ListExpr list) throws SyntaxError {
         variants.add(variant);
     }
 
-    var directives = new ArrayList<Directive>();
-    for (int i = 3; i < list.items().size(); i++) {
-        var item = list.items().get(i);
-        var directive = elaborateDirective(item);
-        directives.add(directive);
-    }
+    var directives = elaborateDirectives(list, 3);
 
     // The tag type is always u8 for now, but we may want to make it configurable in the future.
     // This also means that the prelude has to define the u8 type.
     return new Union(
+        head.name(),
+        head.params(),
         variants,
         new RefType("u8", List.of(), list.pos()),
         directives,
@@ -492,13 +590,7 @@ UnionVariant elaborateUnionVariant(ListExpr list) throws SyntaxError {
 
     var name = firstAtom.name();
     var type = elaborateType(second);
-    var directives = new ArrayList<Directive>();
-
-    for (int i = 2; i < list.items().size(); i++) {
-        var item = list.items().get(i);
-        var directive = elaborateDirective(item);
-        directives.add(directive);
-    }
+    var directives = elaborateDirectives(list, 2);
 
     return new UnionVariant(name, type, directives, list.pos());
 }
@@ -506,6 +598,7 @@ UnionVariant elaborateUnionVariant(ListExpr list) throws SyntaxError {
 Type elaborateType(Expr expr) throws SyntaxError {
     return switch (expr) {
         case AtomExpr atom -> new RefType(atom.name(), List.of(), atom.pos());
+        case NumberExpr number -> new NumberType(number.value(), number.pos());
         case ListExpr list -> {
             if (list.items().size() < 2) {
                 throw new SyntaxError("invalid type", list.pos());
@@ -539,13 +632,9 @@ Type elaborateType(Expr expr) throws SyntaxError {
                     }
 
                     var element = elaborateType(list.items().get(1));
-                    var size = list.items().get(2);
+                    var size = elaborateType(list.items().get(2));
 
-                    if (!(size instanceof NumberExpr arg)) {
-                        throw new SyntaxError("invalid type", size.pos());
-                    }
-
-                    yield new ArrayType(element, arg.value(), list.pos());
+                    yield new ArrayType(element, size, list.pos());
                 }
                 case "slice" -> {
                     if (list.items().size() != 3) {
@@ -592,14 +681,14 @@ Directive elaborateDirective(Expr expr) throws SyntaxError {
 
             yield switch (directive.name()) {
                 case "#native" -> {
-                    if (!(second instanceof StringExpr arg)) {
+                    if (!(second instanceof AtomExpr arg)) {
                         throw new SyntaxError(
                             "invalid directive",
                             second.pos()
                         );
                     }
 
-                    yield new NativeDirective(arg.value(), list.pos());
+                    yield new NativeDirective(arg.name(), list.pos());
                 }
                 case "#endian" -> {
                     if (!(second instanceof AtomExpr arg)) {
