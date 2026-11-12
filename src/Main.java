@@ -300,6 +300,84 @@ final class Parser {
 
 // >------------------------------------------------------------------ Typed AST
 
+sealed interface Declaration permits Alias, Struct, Union {}
+
+record Alias(
+    Type target,
+    List<Directive> directives,
+    TokenPos pos
+) implements Declaration {}
+
+record Struct(
+    List<StructField> fields,
+    List<Directive> directives,
+    TokenPos pos
+) implements Declaration {}
+
+record Union(
+    List<UnionVariant> variants,
+    Type tag,
+    List<Directive> directives,
+    TokenPos pos
+) implements Declaration {}
+
+record StructField(
+    String name,
+    Type type,
+    List<Directive> directives,
+    TokenPos pos
+) {}
+
+record UnionVariant(
+    String name,
+    Type type,
+    List<Directive> directives,
+    TokenPos pos
+) {}
+
+sealed interface Type permits RefType, BytesType, BitsType, ArrayType {}
+
+record RefType(String name, List<Type> args, TokenPos pos) implements Type {}
+
+record BytesType(int size, TokenPos pos) implements Type {}
+
+record BitsType(int size, TokenPos pos) implements Type {}
+
+record ArrayType(
+    Type element,
+    ArrayLength length,
+    TokenPos pos
+) implements Type {}
+
+sealed interface ArrayLength permits ArrayLengthFixed, ArrayLengthPrefixed {}
+
+record ArrayLengthFixed(int size, TokenPos pos) implements ArrayLength {}
+
+record ArrayLengthPrefixed(Type type, TokenPos pos) implements ArrayLength {}
+
+sealed interface Directive
+    permits
+        NativeDirective,
+        PackDirective,
+        TagNumberDirective,
+        TagTypeDirective,
+        EndianDirective {}
+
+record NativeDirective(String arg, TokenPos pos) implements Directive {}
+
+record PackDirective(TokenPos pos) implements Directive {}
+
+record TagNumberDirective(int number, TokenPos pos) implements Directive {}
+
+record TagTypeDirective(Type type, TokenPos pos) implements Directive {}
+
+record EndianDirective(Endian endian, TokenPos pos) implements Directive {}
+
+enum Endian {
+    LITTLE,
+    BIG,
+}
+
 // >----------------------------------------------------------------------- Main
 
 void main(String[] args) throws IOException {
