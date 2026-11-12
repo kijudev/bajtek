@@ -25,6 +25,10 @@ final class SyntaxError extends RuntimeException {
     SyntaxError(Token token, String message) {
         this(message, token.pos().line(), token.pos().column());
     }
+
+    SyntaxError(String message, TokenPos pos) {
+        this(message, pos.line(), pos.column());
+    }
 }
 
 final class Lexer {
@@ -356,26 +360,79 @@ record ArrayLengthFixed(int size, TokenPos pos) implements ArrayLength {}
 record ArrayLengthPrefixed(Type type, TokenPos pos) implements ArrayLength {}
 
 sealed interface Directive
-    permits
-        NativeDirective,
-        PackDirective,
-        TagNumberDirective,
-        TagTypeDirective,
-        EndianDirective {}
+    permits NativeDirective, PackDirective, EndianDirective {}
 
 record NativeDirective(String arg, TokenPos pos) implements Directive {}
 
 record PackDirective(TokenPos pos) implements Directive {}
-
-record TagNumberDirective(int number, TokenPos pos) implements Directive {}
-
-record TagTypeDirective(Type type, TokenPos pos) implements Directive {}
 
 record EndianDirective(Endian endian, TokenPos pos) implements Directive {}
 
 enum Endian {
     LITTLE,
     BIG,
+}
+
+Directive elaborateDirective(Expr expr) {
+    return switch (expr) {
+        case AtomExpr atom -> switch (atom.name()) {
+            case "#pack" -> new PackDirective(atom.pos());
+            default -> throw new SyntaxError("invalid directive", atom.pos());
+        };
+        case ListExpr list -> {
+            if (list.items().size() < 2) {
+                throw new SyntaxError("invalid directive", list.pos());
+            }
+
+            var first = list.items().get(0);
+            var second = list.items().get(1);
+
+            if (!(first instanceof AtomExpr directive)) {
+                throw new SyntaxError("invalid directive", first.pos());
+            }
+
+            yield switch (directive.name()) {
+                case "#native" -> {
+                    if (!(second instanceof StringExpr arg)) {
+                        throw new SyntaxError(
+                            "invalid directive",
+                            second.pos()
+                        );
+                    }
+
+                    yield new NativeDirective(arg.value(), list.pos());
+                }
+                case "#endian" -> {
+                    if (!(second instanceof AtomExpr arg)) {
+                        throw new SyntaxError(
+                            "invalid directive",
+                            second.pos()
+                        );
+                    }
+
+                    yield switch (arg.name()) {
+                        case "little" -> new EndianDirective(
+                            Endian.LITTLE,
+                            list.pos()
+                        );
+                        case "big" -> new EndianDirective(
+                            Endian.BIG,
+                            list.pos()
+                        );
+                        default -> throw new SyntaxError(
+                            "invalid directive",
+                            arg.pos()
+                        );
+                    };
+                }
+                default -> throw new SyntaxError(
+                    "invalid directive",
+                    directive.pos()
+                );
+            };
+        }
+        default -> throw new SyntaxError("invalid directive", expr.pos());
+    };
 }
 
 // >----------------------------------------------------------------------- Main
