@@ -46,6 +46,10 @@ final class Lexer {
         return isAtEnd() ? '\0' : source.charAt(pos);
     }
 
+    private char peekNext() {
+        return pos + 1 >= source.length() ? '\0' : source.charAt(pos + 1);
+    }
+
     private char advance() {
         char c = peek();
         pos++;
@@ -64,9 +68,48 @@ final class Lexer {
         return Character.isLetterOrDigit(c) || "-._#?".indexOf(c) >= 0;
     }
 
-    private void skipWhitespace() {
-        while (!isAtEnd() && Character.isWhitespace(peek())) {
-            advance();
+    private boolean atCommentOpen() {
+        return peek() == '(' && peekNext() == '*';
+    }
+
+    private boolean atCommentClose() {
+        return peek() == '*' && peekNext() == ')';
+    }
+
+    // Comments are (* ... *) and may nest.
+    private void skipComment() {
+        int l = line;
+        int c = column;
+        int depth = 0;
+
+        do {
+            if (isAtEnd()) {
+                throw new SyntaxError("unterminated comment", l, c);
+            }
+
+            if (atCommentOpen()) {
+                advance();
+                advance();
+                depth++;
+            } else if (atCommentClose()) {
+                advance();
+                advance();
+                depth--;
+            } else {
+                advance();
+            }
+        } while (depth > 0);
+    }
+
+    private void skipWhitespaceAndComments() {
+        while (!isAtEnd()) {
+            if (Character.isWhitespace(peek())) {
+                advance();
+            } else if (atCommentOpen()) {
+                skipComment();
+            } else {
+                return;
+            }
         }
     }
 
@@ -116,7 +159,7 @@ final class Lexer {
         var out = new ArrayList<Token>();
 
         while (true) {
-            skipWhitespace();
+            skipWhitespaceAndComments();
             int l = line;
             int c = column;
             int start = pos;
