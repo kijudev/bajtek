@@ -366,6 +366,78 @@ enum Endian {
     BIG,
 }
 
+Union elaborateUnion(ListExpr list) throws SyntaxError {
+    if (list.items().size() < 2) {
+        throw new SyntaxError("invalid union", list.pos());
+    }
+
+    var first = list.items().get(0);
+    var third = list.items().get(2);
+
+    if (!(first instanceof AtomExpr firstAtom)) {
+        throw new SyntaxError("invalid union", first.pos());
+    }
+
+    if (!firstAtom.name().equals("union")) {
+        throw new SyntaxError("invalid union", first.pos());
+    }
+
+    if (!(third instanceof ListExpr thirdList)) {
+        throw new SyntaxError("invalid union", third.pos());
+    }
+
+    var variants = new ArrayList<UnionVariant>();
+    for (var item : thirdList.items()) {
+        if (!(item instanceof ListExpr variantList)) {
+            throw new SyntaxError("invalid union variant", item.pos());
+        }
+
+        var variant = elaborateUnionVariant(variantList);
+        variants.add(variant);
+    }
+
+    var directives = new ArrayList<Directive>();
+    for (int i = 3; i < list.items().size(); i++) {
+        var item = list.items().get(i);
+        var directive = elaborateDirective(item);
+        directives.add(directive);
+    }
+
+    // The tag type is always u8 for now, but we may want to make it configurable in the future.
+    // This also means that the prelude has to define the u8 type.
+    return new Union(
+        variants,
+        new RefType("u8", List.of(), list.pos()),
+        directives,
+        list.pos()
+    );
+}
+
+UnionVariant elaborateUnionVariant(ListExpr list) throws SyntaxError {
+    if (list.items().size() < 2) {
+        throw new SyntaxError("invalid union variant", list.pos());
+    }
+
+    var first = list.items().get(0);
+    var second = list.items().get(1);
+
+    if (!(first instanceof AtomExpr firstAtom)) {
+        throw new SyntaxError("invalid union variant", first.pos());
+    }
+
+    var name = firstAtom.name();
+    var type = elaborateType(second);
+    var directives = new ArrayList<Directive>();
+
+    for (int i = 2; i < list.items().size(); i++) {
+        var item = list.items().get(i);
+        var directive = elaborateDirective(item);
+        directives.add(directive);
+    }
+
+    return new UnionVariant(name, type, directives, list.pos());
+}
+
 Type elaborateType(Expr expr) throws SyntaxError {
     return switch (expr) {
         case AtomExpr atom -> new RefType(atom.name(), List.of(), atom.pos());
