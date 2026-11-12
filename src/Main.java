@@ -8,6 +8,7 @@ enum TokenKind {
     PARENR,
     SYMBOL,
     NUMBER,
+    STRING,
     EOF,
 }
 
@@ -69,6 +70,48 @@ final class Lexer {
         }
     }
 
+    private String lexString(int l, int c) {
+        var sb = new StringBuilder();
+
+        while (true) {
+            if (isAtEnd() || peek() == '\n') {
+                throw new SyntaxError("unterminated string", l, c);
+            }
+
+            char ch = advance();
+
+            if (ch == '"') {
+                return sb.toString();
+            }
+
+            if (ch != '\\') {
+                sb.append(ch);
+                continue;
+            }
+
+            int el = line;
+            int ec = column - 1;
+
+            if (isAtEnd()) {
+                throw new SyntaxError("unterminated string", l, c);
+            }
+
+            sb.append(
+                switch (advance()) {
+                    case 'n' -> '\n';
+                    case 't' -> '\t';
+                    case '"' -> '"';
+                    case '\\' -> '\\';
+                    default -> throw new SyntaxError(
+                        "unknown escape sequence",
+                        el,
+                        ec
+                    );
+                }
+            );
+        }
+    }
+
     List<Token> lex() {
         var out = new ArrayList<Token>();
 
@@ -84,6 +127,17 @@ final class Lexer {
             }
 
             char ch = advance();
+
+            if (ch == '"') {
+                out.add(
+                    new Token(
+                        TokenKind.STRING,
+                        lexString(l, c),
+                        new TokenPos(l, c)
+                    )
+                );
+                continue;
+            }
 
             TokenKind kind = switch (ch) {
                 case '(' -> TokenKind.PARENL;
@@ -122,13 +176,15 @@ final class Lexer {
 
 // >-------------------------------------------------------- S-expression Parser
 
-sealed interface Expr permits AtomExpr, NumberExpr, ListExpr {
+sealed interface Expr permits AtomExpr, NumberExpr, StringExpr, ListExpr {
     TokenPos pos();
 }
 
 record AtomExpr(String name, TokenPos pos) implements Expr {}
 
 record NumberExpr(int value, TokenPos pos) implements Expr {}
+
+record StringExpr(String value, TokenPos pos) implements Expr {}
 
 record ListExpr(List<Expr> items, TokenPos pos) implements Expr {
     ListExpr {
@@ -140,6 +196,14 @@ String exprToString(Expr expr) {
     return switch (expr) {
         case AtomExpr a -> "'" + a.name();
         case NumberExpr n -> "$" + Integer.toString(n.value());
+        case StringExpr s -> "\"" +
+            s
+                .value()
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\t", "\\t") +
+            "\"";
         case ListExpr s -> "(" +
             s
                 .items()
@@ -174,6 +238,7 @@ final class Parser {
         return switch (t.kind()) {
             case NUMBER -> new NumberExpr(Integer.parseInt(t.text()), t.pos());
             case SYMBOL -> new AtomExpr(t.text(), t.pos());
+            case STRING -> new StringExpr(t.text(), t.pos());
             case PARENL -> {
                 var items = new ArrayList<Expr>();
 
@@ -191,128 +256,6 @@ final class Parser {
 }
 
 // >------------------------------------------------------------------ Typed AST
-
-record ModuleNode(
-    String name,
-    List<ImportNode> imports,
-    List<DeclarationNode> declarations,
-    List<Directive> directives,
-    TokenPos pos
-) {}
-
-record ImportNode(String module, TokenPos pos) {}
-
-record DeclarationNode(
-    String name,
-    List<String> params,
-    KindNode body,
-    List<Directive> directives,
-    TokenPos pos
-) {}
-
-sealed interface KindNode permits AliasKind, StructKind, UnionKind {}
-
-record AliasKind(Type target) implements KindNode {}
-
-record StructKind(List<FieldType> fields) implements KindNode {}
-
-record UnionKind(List<VariantType> variants) implements KindNode {}
-
-record FieldType(
-    String name,
-    Type type,
-    List<Directive> directives,
-    TokenPos pos
-) {}
-
-record VariantType(
-    String name,
-    List<FieldType> fields,
-    List<Directive> directives,
-    TokenPos pos
-) {}
-
-sealed interface Type
-    permits
-        RefType,
-        S8Type,
-        S16Type,
-        S32Type,
-        S64Type,
-        U8Type,
-        U16Type,
-        U32Type,
-        U64Type,
-        StrType,
-        CharType,
-        BoolType,
-        ListType,
-        ArrayType {}
-
-record RefType(String name, List<Type> args, TokenPos pos) implements Type {}
-
-record S8Type(TokenPos pos) implements Type {}
-
-record S16Type(TokenPos pos) implements Type {}
-
-record S32Type(TokenPos pos) implements Type {}
-
-record S64Type(TokenPos pos) implements Type {}
-
-record U8Type(TokenPos pos) implements Type {}
-
-record U16Type(TokenPos pos) implements Type {}
-
-record U32Type(TokenPos pos) implements Type {}
-
-record U64Type(TokenPos pos) implements Type {}
-
-record StrType(TokenPos pos) implements Type {}
-
-record CharType(TokenPos pos) implements Type {}
-
-record BoolType(TokenPos pos) implements Type {}
-
-record ListType(Type items, TokenPos pos) implements Type {}
-
-record ArrayType(Type items, int size, TokenPos pos) implements Type {}
-
-sealed interface Directive permits IntrinsicDirective, PackDirective {}
-
-record IntrinsicDirective(String tag, TokenPos pos) implements Directive {}
-
-record PackDirective(TokenPos pos) implements Directive {}
-
-// Module elaborateModule(Sexpr sexpr) {}
-
-Type elaborateAtomType(AtomExpr atom) {
-    return switch (atom.name()) {
-        case "s8" -> new S8Type(atom.pos());
-        case "s16" -> new S16Type(atom.pos());
-        case "s32" -> new S32Type(atom.pos());
-        case "s64" -> new S64Type(atom.pos());
-        case "u8" -> new U8Type(atom.pos());
-        case "u16" -> new U16Type(atom.pos());
-        case "u32" -> new U32Type(atom.pos());
-        case "u64" -> new U64Type(atom.pos());
-        case "str" -> new StrType(atom.pos());
-        case "char" -> new CharType(atom.pos());
-        case "bool" -> new BoolType(atom.pos());
-        default -> new RefType(atom.name(), List.of(), atom.pos());
-    };
-}
-
-Directive elaborateDirective(AtomExpr atom) {
-    return switch (atom.name()) {
-        case "#intrinsic" -> new IntrinsicDirective(atom.name(), atom.pos());
-        case "#pack" -> new PackDirective(atom.pos());
-        default -> throw new SyntaxError(
-            "unknown directive",
-            atom.pos().line(),
-            atom.pos().column()
-        );
-    };
-}
 
 // >----------------------------------------------------------------------- Main
 

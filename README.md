@@ -4,9 +4,11 @@ Binary serialization library with S-expression schemas, canonical encoding, and 
 
 # Initial design of the language
 
+## Samples
+
 ```lisp
 (module prelude
-  (type u8  #intrinsic) (type s8  #intrinsic)
+  (type u8  (#intrinsic "signed" 8)) (type s8  #intrinsic)
   (type u16 #intrinsic) (type s16 #intrinsic)
   (type u32 #intrinsic) (type s32 #intrinsic)
   (type u64 #intrinsic) (type s64 #intrinsic)

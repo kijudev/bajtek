@@ -1,15 +1,17 @@
-(module prelude
-  (type u8  #intrinsic) (type s8  #intrinsic)
-  (type u16 #intrinsic) (type s16 #intrinsic)
-  (type u32 #intrinsic) (type s32 #intrinsic)
-  (type u64 #intrinsic) (type s64 #intrinsic)
+(module prelude (
+    (type u8  (bytes 1) (#native unsigned))
+    (type u16 (bytes 2) (#native unsigned))
+    (type u32 (bytes 4) (#native unsigned))
+    (type u64 (bytes 8) (#native unsigned))
 
-  (type f32 #intrinsic)
-  (type f64 #intrinsic)
+    (type s8  (bytes 1) (#native signed))
+    (type s16 (bytes 2) (#native signed))
+    (type s32 (bytes 4) (#native signed))
+    (type s64 (bytes 8) (#native signed))
 
-  (type bool #intrinsic)
-  (type string #intrinsic)
+    (type f32 (bytes 4) (#native float))
+    (type f64 (bytes 8) (#native float))
 
-  (type (list T) #intrinsic)
-  (type (array T N) #intrinsic)
-)
+    (type bool (bytes 1) (#native bool))
+    (type char (bytes 1) (#native char))
+))
