@@ -318,19 +318,19 @@ record Struct(
     TokenPos pos
 ) implements Declaration {}
 
-record Union(
-    List<UnionVariant> variants,
-    Type tag,
-    List<Directive> directives,
-    TokenPos pos
-) implements Declaration {}
-
 record StructField(
     String name,
     Type type,
     List<Directive> directives,
     TokenPos pos
 ) {}
+
+record Union(
+    List<UnionVariant> variants,
+    Type tag,
+    List<Directive> directives,
+    TokenPos pos
+) implements Declaration {}
 
 record UnionVariant(
     String name,
@@ -364,6 +364,71 @@ record EndianDirective(Endian endian, TokenPos pos) implements Directive {}
 enum Endian {
     LITTLE,
     BIG,
+}
+
+Struct elaborateStruct(ListExpr list) throws SyntaxError {
+    if (list.items().size() < 2) {
+        throw new SyntaxError("invalid struct", list.pos());
+    }
+
+    var first = list.items().get(0);
+    var second = list.items().get(1);
+
+    if (!(first instanceof AtomExpr firstAtom)) {
+        throw new SyntaxError("invalid struct", first.pos());
+    }
+
+    if (!firstAtom.name().equals("struct")) {
+        throw new SyntaxError("invalid struct", first.pos());
+    }
+
+    if (!(second instanceof ListExpr secondList)) {
+        throw new SyntaxError("invalid struct", second.pos());
+    }
+
+    var fields = new ArrayList<StructField>();
+    for (var item : secondList.items()) {
+        if (!(item instanceof ListExpr fieldList)) {
+            throw new SyntaxError("invalid struct field", item.pos());
+        }
+
+        var field = elaborateStructField(fieldList);
+        fields.add(field);
+    }
+
+    var directives = new ArrayList<Directive>();
+    for (int i = 2; i < list.items().size(); i++) {
+        var item = list.items().get(i);
+        var directive = elaborateDirective(item);
+        directives.add(directive);
+    }
+
+    return new Struct(fields, directives, list.pos());
+}
+
+StructField elaborateStructField(ListExpr list) throws SyntaxError {
+    if (list.items().size() < 2) {
+        throw new SyntaxError("invalid struct field", list.pos());
+    }
+
+    var first = list.items().get(0);
+    var second = list.items().get(1);
+
+    if (!(first instanceof AtomExpr firstAtom)) {
+        throw new SyntaxError("invalid struct field", first.pos());
+    }
+
+    var name = firstAtom.name();
+    var type = elaborateType(second);
+    var directives = new ArrayList<Directive>();
+
+    for (int i = 2; i < list.items().size(); i++) {
+        var item = list.items().get(i);
+        var directive = elaborateDirective(item);
+        directives.add(directive);
+    }
+
+    return new StructField(name, type, directives, list.pos());
 }
 
 Union elaborateUnion(ListExpr list) throws SyntaxError {
