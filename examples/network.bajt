@@ -1,0 +1,91 @@
+(* A small chat protocol: framed packets carrying one of several messages. *)
+
+(module network (
+    (import prelude #open)
+    (import geometry)
+
+    (* Generic building blocks *)
+
+    (type (bytestring N) (array u8 N))
+    (type (vec T) (slice T u32))
+    (type text (slice char u16))
+
+    (type ipv4 (bytestring 4))
+    (type ipv6 (bytestring 16))
+    (type flags (bits 3))
+    (type checksum (bytes 4) (#endian big))
+
+    (struct (pair A B) (
+        (first A)
+        (second B)
+    ))
+
+    (union (option T) (
+        (none (array u8 0))
+        (some T)
+    ))
+
+    (union (result T E) (
+        (ok T)
+        (err E)
+    ))
+
+    (* Addresses *)
+
+    (union address (
+        (v4 ipv4)
+        (v6 ipv6)
+    ))
+
+    (struct endpoint (
+        (host address)
+        (port u16 (#endian big))
+    ) #pack)
+
+    (* Messages *)
+
+    (struct user (
+        (id u64)
+        (name text)
+        (avatar (option (vec u8)))
+        (location (option prelude/f64))
+        (position geometry/point)
+    ))
+
+    (struct chat-message (
+        (author u64)
+        (body text)
+        (mentions (vec u64))
+        (attachments (vec (pair text (vec u8))))
+    ))
+
+    (union error-code (
+        (unauthorized u8)
+        (not-found u64)
+        (rate-limited u32)
+    ))
+
+    (union message (
+        (hello (pair u16 text))
+        (join user)
+        (leave u64)
+        (chat chat-message)
+        (ack (result u64 error-code))
+    ))
+
+    (* Framing *)
+
+    (struct header (
+        (magic (bytestring 4))
+        (version u8)
+        (flags flags)
+        (sequence u32 (#endian big))
+        (source endpoint)
+    ) #pack)
+
+    (struct packet (
+        (header header)
+        (payload message)
+        (checksum checksum)
+    ) #pack (#endian little))
+))

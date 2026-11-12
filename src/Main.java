@@ -324,7 +324,7 @@ record Module(
     TokenPos pos
 ) {}
 
-record Import(String module, TokenPos pos) {}
+record Import(String module, List<Directive> directives, TokenPos pos) {}
 
 sealed interface Declaration permits Alias, Struct, Union {
     String name();
@@ -390,13 +390,16 @@ record ArrayType(Type element, Type size, TokenPos pos) implements Type {}
 record SliceType(Type element, Type size, TokenPos pos) implements Type {}
 
 sealed interface Directive
-    permits NativeDirective, PackDirective, EndianDirective {}
+    permits NativeDirective, PackDirective, EndianDirective, OpenDirective {}
 
 record NativeDirective(String arg, TokenPos pos) implements Directive {}
 
 record PackDirective(TokenPos pos) implements Directive {}
 
 record EndianDirective(Endian endian, TokenPos pos) implements Directive {}
+
+// On an import: bring the module's declarations into scope unqualified.
+record OpenDirective(TokenPos pos) implements Directive {}
 
 enum Endian {
     LITTLE,
@@ -464,7 +467,7 @@ Module elaborateModule(Expr expr) throws SyntaxError {
 }
 
 Import elaborateImport(ListExpr list) throws SyntaxError {
-    if (list.items().size() != 2) {
+    if (list.items().size() < 2) {
         throw new SyntaxError("invalid import", list.pos());
     }
 
@@ -483,7 +486,9 @@ Import elaborateImport(ListExpr list) throws SyntaxError {
         throw new SyntaxError("invalid import", second.pos());
     }
 
-    return new Import(module.name(), list.pos());
+    var directives = elaborateDirectives(list, 2);
+
+    return new Import(module.name(), directives, list.pos());
 }
 
 Declaration elaborateDeclaration(Expr expr) throws SyntaxError {
@@ -772,6 +777,7 @@ Directive elaborateDirective(Expr expr) throws SyntaxError {
     return switch (expr) {
         case AtomExpr atom -> switch (atom.name()) {
             case "#pack" -> new PackDirective(atom.pos());
+            case "#open" -> new OpenDirective(atom.pos());
             default -> throw new SyntaxError("invalid directive", atom.pos());
         };
         case ListExpr list -> {
@@ -830,13 +836,104 @@ Directive elaborateDirective(Expr expr) throws SyntaxError {
     };
 }
 
+// >----------------------------------------------------------- AST Tree Printer
+
+record TreeNode(String label, List<TreeNode> children) {}
+
+TreeNode toTreeNode(Record node) {
+    var label = new StringBuilder(node.getClass().getSimpleName());
+    var children = new ArrayList<TreeNode>();
+    TokenPos pos = null;
+
+    for (var component : node.getClass().getRecordComponents()) {
+        Object value;
+        try {
+            value = component.getAccessor().invoke(node);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
+
+        var name = component.getName();
+
+        switch (value) {
+            case null -> {
+            }
+            case TokenPos p -> pos = p;
+            case Record r -> {
+                var child = toTreeNode(r);
+                children.add(
+                    new TreeNode(name + ": " + child.label(), child.children())
+                );
+            }
+            case List<?> list when list.isEmpty() -> {
+            }
+            case List<?> list when (
+                list.getFirst() instanceof Record
+            ) -> children.add(
+                new TreeNode(
+                    name,
+                    list
+                        .stream()
+                        .map(x -> toTreeNode((Record) x))
+                        .toList()
+                )
+            );
+            case List<?> list -> label.append(" ").append(list);
+            default -> label.append(" ").append(value);
+        }
+    }
+
+    if (pos != null) {
+        label.append(" @").append(pos.line()).append(":").append(pos.column());
+    }
+
+    return new TreeNode(label.toString(), children);
+}
+
+void renderTree(TreeNode node, String prefix, boolean last, StringBuilder out) {
+    out.append(prefix)
+        .append(last ? "└─ " : "├─ ")
+        .append(node.label())
+        .append("\n");
+    renderChildren(node, prefix + (last ? "   " : "│  "), out);
+}
+
+void renderChildren(TreeNode node, String prefix, StringBuilder out) {
+    var children = node.children();
+
+    for (int i = 0; i < children.size(); i++) {
+        renderTree(children.get(i), prefix, i == children.size() - 1, out);
+    }
+}
+
+String astToString(Record node) {
+    var root = toTreeNode(node);
+    var out = new StringBuilder(root.label()).append("\n");
+    renderChildren(root, "", out);
+    return out.toString();
+}
+
 // >----------------------------------------------------------------------- Main
 
 void main(String[] args) throws IOException {
+    boolean printAst = false;
+    String path = null;
+
+    for (var arg : args) {
+        if (arg.equals("--ast")) {
+            printAst = true;
+        } else if (arg.startsWith("--") || path != null) {
+            System.err.println("usage: Main [--ast] [file]");
+            System.exit(2);
+        } else {
+            path = arg;
+        }
+    }
+
     String source;
 
-    if (args.length > 0) {
-        source = Files.readString(Paths.get(args[0]));
+    if (path != null) {
+        source = Files.readString(Paths.get(path));
     } else {
         source = new String(System.in.readAllBytes(), StandardCharsets.UTF_8);
     }
@@ -844,7 +941,12 @@ void main(String[] args) throws IOException {
     try {
         var tokens = new Lexer(source).lex();
         var sexpr = new Parser(tokens).parseFile();
-        System.out.println(exprToString(sexpr));
+
+        if (printAst) {
+            System.out.print(astToString(elaborateModule(sexpr)));
+        } else {
+            System.out.println(exprToString(sexpr));
+        }
     } catch (SyntaxError e) {
         System.err.println(e.getMessage());
         System.exit(1);
