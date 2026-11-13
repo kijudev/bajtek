@@ -1,0 +1,19 @@
+(* Points in 2D and 3D space. *)
+
+(module geometry (
+    (struct point2d (
+        (x f64)
+        (y f64)
+    ))
+
+    (struct point3d (
+        (x f64)
+        (y f64)
+        (z f64)
+    ))
+
+    (union point (
+        (flat point2d)
+        (spatial point3d)
+    ))
+))

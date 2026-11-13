@@ -18,8 +18,18 @@ record Token(TokenKind kind, String text, TokenPos pos) {}
 
 final class SyntaxError extends RuntimeException {
 
+    private final String file;
+    private final int line, column;
+
+    private SyntaxError(String file, String message, int line, int column) {
+        super(message);
+        this.file = file;
+        this.line = line;
+        this.column = column;
+    }
+
     SyntaxError(String message, int line, int column) {
-        super(line + ":" + column + ": " + message);
+        this(null, message, line, column);
     }
 
     SyntaxError(Token token, String message) {
@@ -28,6 +38,19 @@ final class SyntaxError extends RuntimeException {
 
     SyntaxError(String message, TokenPos pos) {
         this(message, pos.line(), pos.column());
+    }
+
+    // Attaches the file the error occurred in, unless an inner file already claimed it.
+    SyntaxError inFile(String file) {
+        return this.file != null
+            ? this
+            : new SyntaxError(file, super.getMessage(), line, column);
+    }
+
+    @Override
+    public String getMessage() {
+        var location = line + ":" + column + ": " + super.getMessage();
+        return file != null ? file + ":" + location : location;
     }
 }
 
@@ -251,12 +274,10 @@ String exprToString(Expr expr) {
                 .replace("\n", "\\n")
                 .replace("\t", "\\t") +
             "\"";
-        case ListExpr s -> "(" +
-            s
-                .items()
-                .stream()
-                .map(x -> exprToString(x))
-                .collect(Collectors.joining(" ", "(", ")"));
+        case ListExpr s -> s.items()
+            .stream()
+            .map(x -> exprToString(x))
+            .collect(Collectors.joining(" ", "(", ")"));
     };
 }
 
@@ -677,12 +698,13 @@ Union elaborateUnion(ListExpr list) throws SyntaxError {
     var directives = elaborateDirectives(list, 3);
 
     // The tag type is always u8 for now, but we may want to make it configurable in the future.
-    // This also means that the prelude has to define the u8 type.
+    // It is qualified so a local declaration named u8 cannot shadow it; every module implicitly
+    // imports the prelude, which has to define the u8 type.
     return new Union(
         head.name(),
         head.params(),
         variants,
-        new RefType("u8", List.of(), list.pos()),
+        new RefType("prelude/u8", List.of(), list.pos()),
         directives,
         list.pos()
     );
@@ -836,6 +858,137 @@ Directive elaborateDirective(Expr expr) throws SyntaxError {
     };
 }
 
+// >-------------------------------------------------------------- Module Loader
+
+final class ModuleLoader {
+
+    static final String PRELUDE = "prelude";
+
+    private final Path directory;
+    private final Set<String> loaded = new HashSet<>();
+    private final List<String> stack = new ArrayList<>();
+    private final List<Module> order = new ArrayList<>();
+
+    ModuleLoader(Path directory) {
+        this.directory = directory;
+    }
+
+    List<Module> loadFile(Path file) throws IOException {
+        var fileName = file.getFileName().toString();
+        var name = fileName.endsWith(".bajt")
+            ? fileName.substring(0, fileName.length() - 5)
+            : null;
+        load(Files.readString(file), file.toString(), name);
+        return order;
+    }
+
+    List<Module> loadSource(String source, String sourceName)
+        throws IOException {
+        load(source, sourceName, null);
+        return order;
+    }
+
+    private Path resolvePath(String name) {
+        return directory.resolve(name + ".bajt");
+    }
+
+    private void load(String source, String sourceName, String expectedName)
+        throws IOException {
+        Module module;
+
+        try {
+            module = elaborateModule(
+                new Parser(new Lexer(source).lex()).parseFile()
+            );
+
+            if (expectedName != null && !module.name().equals(expectedName)) {
+                throw new SyntaxError(
+                    "module '" +
+                        module.name() +
+                        "' must be in file " +
+                        module.name() +
+                        ".bajt",
+                    module.pos()
+                );
+            }
+
+            module = withPrelude(module);
+            stack.add(module.name());
+
+            for (var imp : module.imports()) {
+                loadImport(imp);
+            }
+        } catch (SyntaxError e) {
+            throw e.inFile(sourceName);
+        }
+
+        stack.removeLast();
+        loaded.add(module.name());
+        order.add(module);
+    }
+
+    // Every module except the prelude itself gets an implicit (import prelude #open). An explicit
+    // import of the prelude is left as written.
+    private static Module withPrelude(Module module) {
+        if (
+            module.name().equals(PRELUDE) ||
+            module
+                .imports()
+                .stream()
+                .anyMatch(imp -> imp.module().equals(PRELUDE))
+        ) {
+            return module;
+        }
+
+        var prelude = new Import(
+            PRELUDE,
+            List.of(new OpenDirective(module.pos())),
+            module.pos()
+        );
+        var imports = new ArrayList<Import>();
+        imports.add(prelude);
+        imports.addAll(module.imports());
+
+        return new Module(
+            module.name(),
+            imports,
+            module.declarations(),
+            module.directives(),
+            module.pos()
+        );
+    }
+
+    private void loadImport(Import imp) throws IOException {
+        var name = imp.module();
+
+        if (loaded.contains(name)) {
+            return;
+        }
+
+        if (stack.contains(name)) {
+            var cycle = new ArrayList<>(
+                stack.subList(stack.indexOf(name), stack.size())
+            );
+            cycle.add(name);
+            throw new SyntaxError(
+                "import cycle: " + String.join(" -> ", cycle),
+                imp.pos()
+            );
+        }
+
+        var file = resolvePath(name);
+
+        if (!Files.isRegularFile(file)) {
+            throw new SyntaxError(
+                "module '" + name + "' not found (looked for " + file + ")",
+                imp.pos()
+            );
+        }
+
+        load(Files.readString(file), file.toString(), name);
+    }
+}
+
 // >----------------------------------------------------------- AST Tree Printer
 
 record TreeNode(String label, List<TreeNode> children) {}
@@ -930,22 +1083,42 @@ void main(String[] args) throws IOException {
         }
     }
 
-    String source;
-
-    if (path != null) {
-        source = Files.readString(Paths.get(path));
-    } else {
-        source = new String(System.in.readAllBytes(), StandardCharsets.UTF_8);
-    }
-
     try {
-        var tokens = new Lexer(source).lex();
-        var sexpr = new Parser(tokens).parseFile();
-
         if (printAst) {
-            System.out.print(astToString(elaborateModule(sexpr)));
+            // Imports are resolved next to the input file, or the working directory for stdin.
+            List<Module> modules;
+
+            if (path != null) {
+                var file = Paths.get(path);
+                var directory =
+                    file.getParent() != null ? file.getParent() : Paths.get("");
+                modules = new ModuleLoader(directory).loadFile(file);
+            } else {
+                var source = new String(
+                    System.in.readAllBytes(),
+                    StandardCharsets.UTF_8
+                );
+                modules = new ModuleLoader(Paths.get("")).loadSource(
+                    source,
+                    "<stdin>"
+                );
+            }
+
+            for (var module : modules) {
+                System.out.print(astToString(module));
+            }
         } else {
-            System.out.println(exprToString(sexpr));
+            var source =
+                path != null
+                    ? Files.readString(Paths.get(path))
+                    : new String(
+                          System.in.readAllBytes(),
+                          StandardCharsets.UTF_8
+                      );
+
+            System.out.println(
+                exprToString(new Parser(new Lexer(source).lex()).parseFile())
+            );
         }
     } catch (SyntaxError e) {
         System.err.println(e.getMessage());

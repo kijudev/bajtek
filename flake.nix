@@ -23,6 +23,7 @@
               (pkgs.gradle_9.override { java = jdk; })
               pkgs.jdt-language-server
               pkgs.google-java-format
+              pkgs.just
             ];
 
             JAVA_HOME = jdk.home;
