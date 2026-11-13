@@ -14,15 +14,19 @@ parse file:
 ast file:
     java {{main}} --ast {{file}}
 
+# Like ast, but with every name resolved to its declaration ("module/name")
+resolve file:
+    java {{main}} --resolve {{file}}
+
 # Print the typed AST of the network example
 example:
     just ast examples/network.bajt
 
-# Check that every example loads without errors
+# Check that every example loads and resolves without errors
 check:
     #!/usr/bin/env bash
     set -euo pipefail
     for file in examples/*.bajt; do
-        java {{main}} --ast "$file" > /dev/null
+        java {{main}} --resolve "$file" > /dev/null
         echo "ok $file"
     done

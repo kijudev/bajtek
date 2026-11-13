@@ -26,10 +26,12 @@ Directives, written with `#`, adjust encoding:
 `(import foo)` loads `foo.bajt` from the same directory. Names from an imported module are
 written qualified, like `foo/bar`, unless the import is `#open`. Every module implicitly
 imports `prelude` with `#open`, so the integer, float, `bool` and `char` types are always in
-scope. Comments are written `(* ... *)` and can be nested.
+scope. Names never shadow each other: a module's own declarations, everything from its `#open`
+imports and type parameters must all have distinct names, otherwise it is an error. Comments are
+written `(* ... *)` and can be nested.
 
-Compiler pipeline: lexer, S-expression parser, elaboration into a typed AST, module loading.
-Still to come: name resolution, kind checking, monomorphization, layout and codegen.
+Compiler pipeline: lexer, S-expression parser, elaboration into a typed AST, module loading,
+name resolution. Still to come: kind checking, monomorphization, layout and codegen.
 
 ## Example
 
@@ -81,9 +83,10 @@ See [`examples/`](examples) for the prelude and a larger network protocol schema
 Requires JDK 25. `nix develop` provides a dev shell with it.
 
 ```sh
-java src/Main.java FILE          # parse FILE and print it back as an S-expression
-java src/Main.java --ast FILE    # load FILE and its imports, print the typed AST of each
-java src/Main.java --ast < FILE  # read from stdin; imports are looked up in the current directory
+java src/Main.java FILE            # parse FILE and print it back as an S-expression
+java src/Main.java --ast FILE      # load FILE and its imports, print the typed AST of each
+java src/Main.java --resolve FILE  # like --ast, with every name resolved to "module/name"
+java src/Main.java --ast < FILE    # read from stdin; imports are looked up in the current directory
 ```
 
 With [just](https://github.com/casey/just):
@@ -92,6 +95,7 @@ With [just](https://github.com/casey/just):
 just                 # list commands
 just parse FILE      # print FILE as an S-expression
 just ast FILE        # print the typed AST of FILE and its imports
+just resolve FILE    # print the resolved AST of FILE and its imports
 just example         # print the typed AST of examples/network.bajt
-just check           # check that every example loads
+just check           # check that every example loads and resolves
 ```

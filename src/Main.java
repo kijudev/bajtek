@@ -339,6 +339,7 @@ final class Parser {
 
 record Module(
     String name,
+    String file,
     List<Import> imports,
     List<Declaration> declarations,
     List<Directive> directives,
@@ -395,9 +396,20 @@ record UnionVariant(
 ) {}
 
 sealed interface Type
-    permits RefType, NumberType, BytesType, BitsType, ArrayType, SliceType {}
+    permits
+        RefType,
+        ParamType,
+        NumberType,
+        BytesType,
+        BitsType,
+        ArrayType,
+        SliceType {}
 
+// After resolution the name is canonical: "module/name".
 record RefType(String name, List<Type> args, TokenPos pos) implements Type {}
+
+// A reference to a type parameter of the enclosing declaration, created by resolution.
+record ParamType(String name, TokenPos pos) implements Type {}
 
 // A type-level number, e.g. an array length: (array u32 4) or (numarray 4).
 record NumberType(int value, TokenPos pos) implements Type {}
@@ -427,7 +439,7 @@ enum Endian {
     BIG,
 }
 
-Module elaborateModule(Expr expr) throws SyntaxError {
+Module elaborateModule(Expr expr, String file) throws SyntaxError {
     if (!(expr instanceof ListExpr list) || list.items().size() < 3) {
         throw new SyntaxError("invalid module", expr.pos());
     }
@@ -480,6 +492,7 @@ Module elaborateModule(Expr expr) throws SyntaxError {
 
     return new Module(
         name.name(),
+        file,
         imports,
         declarations,
         directives,
@@ -898,7 +911,8 @@ final class ModuleLoader {
 
         try {
             module = elaborateModule(
-                new Parser(new Lexer(source).lex()).parseFile()
+                new Parser(new Lexer(source).lex()).parseFile(),
+                sourceName
             );
 
             if (expectedName != null && !module.name().equals(expectedName)) {
@@ -951,6 +965,7 @@ final class ModuleLoader {
 
         return new Module(
             module.name(),
+            module.file(),
             imports,
             module.declarations(),
             module.directives(),
@@ -986,6 +1001,313 @@ final class ModuleLoader {
         }
 
         load(Files.readString(file), file.toString(), name);
+    }
+}
+
+// >---------------------------------------------------------- Symbol Resolution
+
+record Program(List<Module> modules, Map<String, Declaration> declarations) {}
+
+record Scope(
+    Set<String> imported,
+    Map<String, String> names,
+    Set<String> params
+) {}
+
+final class Resolver {
+
+    static final Set<String> RESERVED = Set.of(
+        "bytes",
+        "bits",
+        "array",
+        "slice"
+    );
+
+    private final Map<String, Module> modules = new HashMap<>();
+    private final Map<String, Declaration> declarations = new HashMap<>();
+
+    Program resolve(List<Module> input) {
+        for (var module : input) {
+            try {
+                collect(module);
+            } catch (SyntaxError e) {
+                throw e.inFile(module.file());
+            }
+        }
+
+        var resolved = new ArrayList<Module>();
+        var table = new LinkedHashMap<String, Declaration>();
+
+        for (var module : input) {
+            try {
+                var result = resolveModule(module);
+                resolved.add(result);
+
+                for (var decl : result.declarations()) {
+                    table.put(result.name() + "/" + decl.name(), decl);
+                }
+            } catch (SyntaxError e) {
+                throw e.inFile(module.file());
+            }
+        }
+
+        return new Program(resolved, table);
+    }
+
+    private void collect(Module module) {
+        modules.put(module.name(), module);
+
+        for (var decl : module.declarations()) {
+            checkName(decl.name(), decl.pos());
+
+            var canonical = module.name() + "/" + decl.name();
+
+            if (declarations.putIfAbsent(canonical, decl) != null) {
+                throw new SyntaxError(
+                    "duplicate declaration '" + decl.name() + "'",
+                    decl.pos()
+                );
+            }
+        }
+    }
+
+    private void checkName(String name, TokenPos pos) {
+        if (RESERVED.contains(name)) {
+            throw new SyntaxError("'" + name + "' is a reserved name", pos);
+        }
+
+        if (name.contains("/")) {
+            throw new SyntaxError(
+                "name '" + name + "' cannot contain '/'",
+                pos
+            );
+        }
+    }
+
+    private void bind(
+        Map<String, String> names,
+        String name,
+        String canonical,
+        TokenPos pos
+    ) {
+        var existing = names.putIfAbsent(name, canonical);
+
+        if (existing != null) {
+            throw new SyntaxError(
+                "'" + canonical + "' conflicts with '" + existing + "'",
+                pos
+            );
+        }
+    }
+
+    private Module resolveModule(Module module) {
+        var imported = new HashSet<String>();
+        var names = new HashMap<String, String>();
+
+        imported.add(module.name());
+
+        for (var decl : module.declarations()) {
+            bind(
+                names,
+                decl.name(),
+                module.name() + "/" + decl.name(),
+                decl.pos()
+            );
+        }
+
+        for (var imp : module.imports()) {
+            if (!imported.add(imp.module())) {
+                throw new SyntaxError(
+                    "duplicate import of '" + imp.module() + "'",
+                    imp.pos()
+                );
+            }
+
+            if (
+                imp
+                    .directives()
+                    .stream()
+                    .anyMatch(d -> d instanceof OpenDirective)
+            ) {
+                for (var decl : modules.get(imp.module()).declarations()) {
+                    bind(
+                        names,
+                        decl.name(),
+                        imp.module() + "/" + decl.name(),
+                        imp.pos()
+                    );
+                }
+            }
+        }
+
+        var resolved = new ArrayList<Declaration>();
+
+        for (var decl : module.declarations()) {
+            var params = new HashSet<String>();
+
+            for (var param : decl.params()) {
+                checkName(param, decl.pos());
+
+                if (names.containsKey(param)) {
+                    throw new SyntaxError(
+                        "type parameter '" +
+                            param +
+                            "' conflicts with '" +
+                            names.get(param) +
+                            "'",
+                        decl.pos()
+                    );
+                }
+
+                if (!params.add(param)) {
+                    throw new SyntaxError(
+                        "duplicate type parameter '" + param + "'",
+                        decl.pos()
+                    );
+                }
+            }
+
+            resolved.add(
+                resolveDeclaration(decl, new Scope(imported, names, params))
+            );
+        }
+
+        return new Module(
+            module.name(),
+            module.file(),
+            module.imports(),
+            resolved,
+            module.directives(),
+            module.pos()
+        );
+    }
+
+    private Declaration resolveDeclaration(Declaration decl, Scope scope) {
+        return switch (decl) {
+            case Alias a -> new Alias(
+                a.name(),
+                a.params(),
+                resolveType(a.target(), scope),
+                a.directives(),
+                a.pos()
+            );
+            case Struct s -> new Struct(
+                s.name(),
+                s.params(),
+                s
+                    .fields()
+                    .stream()
+                    .map(f ->
+                        new StructField(
+                            f.name(),
+                            resolveType(f.type(), scope),
+                            f.directives(),
+                            f.pos()
+                        )
+                    )
+                    .toList(),
+                s.directives(),
+                s.pos()
+            );
+            case Union u -> new Union(
+                u.name(),
+                u.params(),
+                u
+                    .variants()
+                    .stream()
+                    .map(v ->
+                        new UnionVariant(
+                            v.name(),
+                            resolveType(v.type(), scope),
+                            v.directives(),
+                            v.pos()
+                        )
+                    )
+                    .toList(),
+                resolveType(u.tag(), scope),
+                u.directives(),
+                u.pos()
+            );
+        };
+    }
+
+    private Type resolveType(Type type, Scope scope) {
+        return switch (type) {
+            case RefType r -> resolveRef(r, scope);
+            case ArrayType a -> new ArrayType(
+                resolveType(a.element(), scope),
+                resolveType(a.size(), scope),
+                a.pos()
+            );
+            case SliceType s -> new SliceType(
+                resolveType(s.element(), scope),
+                resolveType(s.size(), scope),
+                s.pos()
+            );
+            case ParamType p -> p;
+            case NumberType n -> n;
+            case BytesType b -> b;
+            case BitsType b -> b;
+        };
+    }
+
+    private Type resolveRef(RefType ref, Scope scope) {
+        var name = ref.name();
+        String canonical;
+
+        if (scope.params().contains(name)) {
+            if (!ref.args().isEmpty()) {
+                throw new SyntaxError(
+                    "type parameter '" + name + "' cannot take arguments",
+                    ref.pos()
+                );
+            }
+
+            return new ParamType(name, ref.pos());
+        } else if (name.contains("/")) {
+            var module = name.substring(0, name.indexOf('/'));
+
+            if (!scope.imported().contains(module)) {
+                throw new SyntaxError(
+                    "module '" + module + "' is not imported",
+                    ref.pos()
+                );
+            }
+
+            if (!declarations.containsKey(name)) {
+                throw new SyntaxError("unknown type '" + name + "'", ref.pos());
+            }
+
+            canonical = name;
+        } else {
+            canonical = scope.names().get(name);
+
+            if (canonical == null) {
+                throw new SyntaxError("unknown type '" + name + "'", ref.pos());
+            }
+        }
+
+        var decl = declarations.get(canonical);
+
+        if (decl.params().size() != ref.args().size()) {
+            throw new SyntaxError(
+                "'" +
+                    canonical +
+                    "' expects " +
+                    decl.params().size() +
+                    " argument(s), got " +
+                    ref.args().size(),
+                ref.pos()
+            );
+        }
+
+        var args = ref
+            .args()
+            .stream()
+            .map(arg -> resolveType(arg, scope))
+            .toList();
+
+        return new RefType(canonical, args, ref.pos());
     }
 }
 
@@ -1069,14 +1391,14 @@ String astToString(Record node) {
 // >----------------------------------------------------------------------- Main
 
 void main(String[] args) throws IOException {
-    boolean printAst = false;
+    String mode = null;
     String path = null;
 
     for (var arg : args) {
-        if (arg.equals("--ast")) {
-            printAst = true;
+        if ((arg.equals("--ast") || arg.equals("--resolve")) && mode == null) {
+            mode = arg;
         } else if (arg.startsWith("--") || path != null) {
-            System.err.println("usage: Main [--ast] [file]");
+            System.err.println("usage: Main [--ast | --resolve] [file]");
             System.exit(2);
         } else {
             path = arg;
@@ -1084,7 +1406,7 @@ void main(String[] args) throws IOException {
     }
 
     try {
-        if (printAst) {
+        if (mode != null) {
             // Imports are resolved next to the input file, or the working directory for stdin.
             List<Module> modules;
 
@@ -1102,6 +1424,10 @@ void main(String[] args) throws IOException {
                     source,
                     "<stdin>"
                 );
+            }
+
+            if (mode.equals("--resolve")) {
+                modules = new Resolver().resolve(modules).modules();
             }
 
             for (var module : modules) {
