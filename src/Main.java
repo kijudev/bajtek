@@ -1016,7 +1016,7 @@ record Scope(
 
 final class Resolver {
 
-    static final Set<String> RESERVED = Set.of(
+    static final Set<String> reserved = Set.of(
         "bytes",
         "bits",
         "array",
@@ -1046,8 +1046,8 @@ final class Resolver {
                 for (var decl : result.declarations()) {
                     table.put(result.name() + "/" + decl.name(), decl);
                 }
-            } catch (SyntaxError e) {
-                throw e.inFile(module.file());
+            } catch (SyntaxError error) {
+                throw error.inFile(module.file());
             }
         }
 
@@ -1072,7 +1072,7 @@ final class Resolver {
     }
 
     private void checkName(String name, TokenPos pos) {
-        if (RESERVED.contains(name)) {
+        if (reserved.contains(name)) {
             throw new SyntaxError("'" + name + "' is a reserved name", pos);
         }
 
