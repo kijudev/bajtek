@@ -1319,6 +1319,188 @@ final class Resolver {
     }
 }
 
+// >-------------------------------------------------------- C++ Code Generation
+
+final class CppCodeWriter {
+
+    private final StringBuilder out = new StringBuilder();
+    private final String ident_unit;
+    private int ident_level = 0;
+
+    CppCodeWriter(String ident_unit) {
+        this.ident_unit = ident_unit;
+    }
+
+    CppCodeWriter ident() {
+        ident_level++;
+        return this;
+    }
+
+    CppCodeWriter unident() {
+        if (ident_level == 0) {
+            throw new IllegalStateException("unident() called too many times");
+        }
+
+        ident_level--;
+        return this;
+    }
+
+    CppCodeWriter line(String text) {
+        if (!text.isEmpty()) {
+            for (int i = 0; i < ident_level; i++) {
+                out.append(ident_unit);
+            }
+
+            out.append(text);
+        }
+
+        out.append("\n");
+        return this;
+    }
+
+    CppCodeWriter codeline(String text) {
+        return line(text + ";");
+    }
+
+    CppCodeWriter newline() {
+        out.append("\n");
+        return this;
+    }
+
+    CppCodeWriter semicolon() {
+        out.append(";\n");
+        return this;
+    }
+
+    CppCodeWriter include(String name) {
+        out.append("#include <").append(name).append(">\n");
+        return this;
+    }
+
+    CppCodeWriter beginStruct(String name, List<String> params) {
+        if (!params.isEmpty()) {
+            line("template <" + String.join(", ", params) + ">").ident();
+        }
+
+        line("struct " + name + " {").ident();
+        return this;
+    }
+
+    CppCodeWriter endStruct() {
+        unident().line("};");
+        return this;
+    }
+
+    CppCodeWriter structField(String type, String name) {
+        line(type + " " + name).semicolon();
+        return this;
+    }
+
+    CppCodeWriter beginClass(String name, List<String> params) {
+        if (!params.isEmpty()) {
+            line("template <" + String.join(", ", params) + ">").ident();
+        }
+
+        line("class " + name + " {").ident();
+        return this;
+    }
+
+    CppCodeWriter endClass() {
+        unident().line("};");
+        return this;
+    }
+
+    CppCodeWriter classField(String type, String name) {
+        line(type + " " + name).semicolon();
+        return this;
+    }
+
+    CppCodeWriter beginFunction(
+        String returnType,
+        String name,
+        List<String> params
+    ) {
+        line(
+            returnType + " " + name + "(" + String.join(", ", params) + ") {"
+        ).ident();
+        return this;
+    }
+
+    CppCodeWriter endFunction() {
+        unident().line("}");
+        return this;
+    }
+
+    CppCodeWriter beginEnumClass(
+        String name,
+        String type,
+        List<String> params
+    ) {
+        if (!params.isEmpty()) {
+            line("template <" + String.join(", ", params) + ">").ident();
+        }
+
+        line("enum class " + name + " : " + type + " {").ident();
+        return this;
+    }
+
+    CppCodeWriter endEnumClass() {
+        unident().line("};");
+        return this;
+    }
+
+    CppCodeWriter enumClassVariant(String name, String value) {
+        line(name + " = " + value).semicolon();
+        return this;
+    }
+
+    CppCodeWriter alias(String name, String target, List<String> params) {
+        if (params.isEmpty()) {
+            line("using " + name + " = " + target).semicolon();
+        } else {
+            line("template <" + String.join(", ", params) + ">").ident();
+            line("using " + name + " = " + target).semicolon();
+            unident();
+        }
+
+        return this;
+    }
+
+    CppCodeWriter comment(String text) {
+        if (text.contains("\n")) {
+            return commentBlock(text);
+        }
+
+        line("// " + text);
+        return this;
+    }
+
+    CppCodeWriter commentBlock(String text) {
+        line("/*");
+        for (var line : text.split("\n")) {
+            line("// " + line);
+        }
+        line("*/");
+        return this;
+    }
+
+    CppCodeWriter beginNamespace(String name) {
+        line("namespace " + name + " {").ident();
+        return this;
+    }
+
+    CppCodeWriter endNamespace() {
+        unident().line("}");
+        return this;
+    }
+}
+
+final class CppCodeGenerator {
+
+    private final CppCodeWriter writer;
+    private final Program program;
+}
+
 // >----------------------------------------------------------- AST Tree Printer
 
 record TreeNode(String label, List<TreeNode> children) {}
