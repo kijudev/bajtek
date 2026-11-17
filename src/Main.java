@@ -1498,7 +1498,27 @@ final class CppCodeWriter {
 final class CppCodeGenerator {
 
     private final CppCodeWriter writer;
-    private final Program program;
+    private final String namespace;
+
+    CppCodeGenerator(String namespace, String ident) {
+        this.namespace = namespace;
+        this.writer = new CppCodeWriter(ident);
+    }
+
+    String generate(Program program) {
+        includes();
+
+        return writer.out.toString();
+    }
+
+    private void includes() {
+        writer
+            .include("cstdint")
+            .include("vector")
+            .include("array")
+            .include("variant")
+            .include("string");
+    }
 }
 
 // >----------------------------------------------------------- AST Tree Printer
