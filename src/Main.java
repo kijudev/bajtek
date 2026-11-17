@@ -575,8 +575,10 @@ DeclarationHead elaborateDeclarationHead(Expr expr) throws SyntaxError {
     };
 }
 
-List<Directive> elaborateDirectives(ListExpr list, int from)
-    throws SyntaxError {
+List<Directive> elaborateDirectives(
+    ListExpr list,
+    int from
+) throws SyntaxError {
     var directives = new ArrayList<Directive>();
 
     for (int i = from; i < list.items().size(); i++) {
@@ -895,8 +897,10 @@ final class ModuleLoader {
         return order;
     }
 
-    List<Module> loadSource(String source, String sourceName)
-        throws IOException {
+    List<Module> loadSource(
+        String source,
+        String sourceName
+    ) throws IOException {
         load(source, sourceName, null);
         return order;
     }
@@ -905,8 +909,11 @@ final class ModuleLoader {
         return directory.resolve(name + ".bajt");
     }
 
-    private void load(String source, String sourceName, String expectedName)
-        throws IOException {
+    private void load(
+        String source,
+        String sourceName,
+        String expectedName
+    ) throws IOException {
         Module module;
 
         try {
@@ -959,6 +966,7 @@ final class ModuleLoader {
             List.of(new OpenDirective(module.pos())),
             module.pos()
         );
+
         var imports = new ArrayList<Import>();
         imports.add(prelude);
         imports.addAll(module.imports());
@@ -1390,61 +1398,56 @@ String astToString(Record node) {
 
 // >----------------------------------------------------------------------- Main
 
+enum CLIAction {
+    AST,
+    RESOLVE,
+}
+
+List<Module> loadModulesFromFile(String path) throws IOException {
+    var file = Paths.get(path);
+    var directory = file.getParent() != null ? file.getParent() : Paths.get("");
+    return new ModuleLoader(directory).loadFile(file);
+}
+
+List<Module> loadModulesFromStdin() throws IOException {
+    var source = new String(System.in.readAllBytes(), StandardCharsets.UTF_8);
+    return new ModuleLoader(Paths.get("")).loadSource(source, "<stdin>");
+}
+
 void main(String[] args) throws IOException {
-    String mode = null;
+    CLIAction mode = CLIAction.RESOLVE;
     String path = null;
 
     for (var arg : args) {
-        if ((arg.equals("--ast") || arg.equals("--resolve")) && mode == null) {
-            mode = arg;
-        } else if (arg.startsWith("--") || path != null) {
-            System.err.println("usage: Main [--ast | --resolve] [file]");
-            System.exit(2);
-        } else {
+        if (arg.equals("--ast")) {
+            mode = CLIAction.AST;
+        } else if (arg.equals("--resolve")) {
+            mode = CLIAction.RESOLVE;
+        } else if (path == null) {
             path = arg;
+        } else {
+            System.err.println("unexpected argument: " + arg);
+            System.exit(1);
         }
     }
 
     try {
-        if (mode != null) {
-            // Imports are resolved next to the input file, or the working directory for stdin.
-            List<Module> modules;
+        var modules =
+            path != null ? loadModulesFromFile(path) : loadModulesFromStdin();
 
-            if (path != null) {
-                var file = Paths.get(path);
-                var directory =
-                    file.getParent() != null ? file.getParent() : Paths.get("");
-                modules = new ModuleLoader(directory).loadFile(file);
-            } else {
-                var source = new String(
-                    System.in.readAllBytes(),
-                    StandardCharsets.UTF_8
-                );
-                modules = new ModuleLoader(Paths.get("")).loadSource(
-                    source,
-                    "<stdin>"
-                );
+        switch (mode) {
+            case AST -> {
+                for (var module : modules) {
+                    System.out.println(astToString(module));
+                }
             }
+            case RESOLVE -> {
+                var program = new Resolver().resolve(modules);
 
-            if (mode.equals("--resolve")) {
-                modules = new Resolver().resolve(modules).modules();
+                for (var module : program.modules()) {
+                    System.out.println(astToString(module));
+                }
             }
-
-            for (var module : modules) {
-                System.out.print(astToString(module));
-            }
-        } else {
-            var source =
-                path != null
-                    ? Files.readString(Paths.get(path))
-                    : new String(
-                          System.in.readAllBytes(),
-                          StandardCharsets.UTF_8
-                      );
-
-            System.out.println(
-                exprToString(new Parser(new Lexer(source).lex()).parseFile())
-            );
         }
     } catch (SyntaxError e) {
         System.err.println(e.getMessage());
