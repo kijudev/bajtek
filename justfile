@@ -18,6 +18,10 @@ ast file:
 resolve file:
     java {{ main }} --resolve {{ file }}
 
+# Kind check, then print every instance of every declaration the schema uses
+mono file:
+    java {{ main }} --mono {{ file }}
+
 # Print the typed AST of the network example
 ast-example:
     just ast examples/network.bajt
@@ -26,11 +30,11 @@ ast-example:
 resolve-example:
     just resolve examples/network.bajt
 
-# Check that every example loads and resolves without errors
+# Check that every example loads, resolves, kind checks and monomorphizes without errors
 check:
     #!/usr/bin/env bash
     set -euo pipefail
     for file in examples/*.bajt; do
-        java {{ main }} --resolve "$file" > /dev/null
+        java {{ main }} --mono "$file" > /dev/null
         echo "ok $file"
     done

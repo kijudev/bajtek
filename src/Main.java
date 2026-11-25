@@ -403,7 +403,10 @@ sealed interface Type
         BytesType,
         BitsType,
         ArrayType,
-        SliceType {}
+        SliceType
+{
+    TokenPos pos();
+}
 
 // After resolution the name is canonical: "module/name".
 record RefType(String name, List<Type> args, TokenPos pos) implements Type {}
@@ -414,9 +417,10 @@ record ParamType(String name, TokenPos pos) implements Type {}
 // A type-level number, e.g. an array length: (array u32 4) or (numarray 4).
 record NumberType(int value, TokenPos pos) implements Type {}
 
-record BytesType(int size, TokenPos pos) implements Type {}
+// The size is a NumberType or a ParamType of number kind, e.g. (bytes 4) or (bytes N).
+record BytesType(Type size, TokenPos pos) implements Type {}
 
-record BitsType(int size, TokenPos pos) implements Type {}
+record BitsType(Type size, TokenPos pos) implements Type {}
 
 record ArrayType(Type element, Type size, TokenPos pos) implements Type {}
 
@@ -762,18 +766,18 @@ Type elaborateType(Expr expr) throws SyntaxError {
 
             yield switch (type.name()) {
                 case "bytes" -> {
-                    if (!(second instanceof NumberExpr arg)) {
-                        throw new SyntaxError("invalid type", second.pos());
+                    if (list.items().size() != 2) {
+                        throw new SyntaxError("invalid type", list.pos());
                     }
 
-                    yield new BytesType(arg.value(), list.pos());
+                    yield new BytesType(elaborateType(second), list.pos());
                 }
                 case "bits" -> {
-                    if (!(second instanceof NumberExpr arg)) {
-                        throw new SyntaxError("invalid type", second.pos());
+                    if (list.items().size() != 2) {
+                        throw new SyntaxError("invalid type", list.pos());
                     }
 
-                    yield new BitsType(arg.value(), list.pos());
+                    yield new BitsType(elaborateType(second), list.pos());
                 }
                 case "array" -> {
                     if (list.items().size() != 3) {
@@ -1252,10 +1256,16 @@ final class Resolver {
                 resolveType(s.size(), scope),
                 s.pos()
             );
+            case BytesType b -> new BytesType(
+                resolveType(b.size(), scope),
+                b.pos()
+            );
+            case BitsType b -> new BitsType(
+                resolveType(b.size(), scope),
+                b.pos()
+            );
             case ParamType p -> p;
             case NumberType n -> n;
-            case BytesType b -> b;
-            case BitsType b -> b;
         };
     }
 
@@ -1316,6 +1326,437 @@ final class Resolver {
             .toList();
 
         return new RefType(canonical, args, ref.pos());
+    }
+}
+
+// >-------------------------------------------------------------- Kind Checking
+
+final class KindChecker {
+
+    private static final int TYPE = 0,
+        NUMBER = 1;
+
+    private final Map<String, Integer> bases = new HashMap<>();
+    private int[] parent;
+
+    void check(Program program) {
+        int next = 2;
+
+        for (var entry : program.declarations().entrySet()) {
+            bases.put(entry.getKey(), next);
+            next += entry.getValue().params().size();
+        }
+
+        parent = new int[next];
+
+        for (int i = 0; i < next; i++) {
+            parent[i] = i;
+        }
+
+        for (var module : program.modules()) {
+            try {
+                for (var decl : module.declarations()) {
+                    checkDeclaration(module.name() + "/" + decl.name(), decl);
+                }
+            } catch (SyntaxError e) {
+                throw e.inFile(module.file());
+            }
+        }
+    }
+
+    private void checkDeclaration(String canonical, Declaration decl) {
+        var params = new HashMap<String, Integer>();
+        int base = bases.get(canonical);
+
+        for (int i = 0; i < decl.params().size(); i++) {
+            params.put(decl.params().get(i), base + i);
+        }
+
+        switch (decl) {
+            case Alias a -> expect(a.target(), TYPE, params);
+            case Struct s -> {
+                for (var field : s.fields()) {
+                    expect(field.type(), TYPE, params);
+                }
+            }
+            case Union u -> {
+                for (var variant : u.variants()) {
+                    expect(variant.type(), TYPE, params);
+                }
+
+                expect(u.tag(), TYPE, params);
+            }
+        }
+    }
+
+    private void expect(Type type, int expected, Map<String, Integer> params) {
+        switch (type) {
+            case ParamType p -> unify(expected, params.get(p.name()), p);
+            case NumberType n -> unify(expected, NUMBER, n);
+            case RefType r -> {
+                unify(expected, TYPE, r);
+                int base = bases.get(r.name());
+
+                for (int i = 0; i < r.args().size(); i++) {
+                    expect(r.args().get(i), base + i, params);
+                }
+            }
+            case BytesType b -> {
+                unify(expected, TYPE, b);
+                expect(b.size(), NUMBER, params);
+            }
+            case BitsType b -> {
+                unify(expected, TYPE, b);
+                expect(b.size(), NUMBER, params);
+            }
+            case ArrayType a -> {
+                unify(expected, TYPE, a);
+                expect(a.element(), TYPE, params);
+                expect(a.size(), NUMBER, params);
+            }
+            case SliceType s -> {
+                unify(expected, TYPE, s);
+                expect(s.element(), TYPE, params);
+                expect(s.size(), TYPE, params);
+            }
+        }
+    }
+
+    private int find(int node) {
+        while (parent[node] != node) {
+            parent[node] = parent[parent[node]];
+            node = parent[node];
+        }
+
+        return node;
+    }
+
+    private void unify(int expected, int actual, Type at) {
+        int a = find(expected);
+        int b = find(actual);
+
+        if (a == b) {
+            return;
+        }
+
+        if (a <= NUMBER && b <= NUMBER) {
+            var got =
+                at instanceof ParamType p
+                    ? "type parameter '" +
+                      p.name() +
+                      "', which is " +
+                      describe(b)
+                    : describe(b);
+
+            throw new SyntaxError(
+                "expected " + describe(a) + ", got " + got,
+                at.pos()
+            );
+        }
+
+        if (a <= NUMBER) {
+            parent[b] = a;
+        } else {
+            parent[a] = b;
+        }
+    }
+
+    private static String describe(int kind) {
+        return kind == TYPE ? "a type" : "a number";
+    }
+}
+
+// >--------------------------------------------------------- Monomorphization
+
+sealed interface MArg permits MType, MNumber {}
+
+sealed interface MType
+    extends MArg
+    permits MRef, MBytes, MBits, MArray, MSlice {}
+
+record MNumber(int value) implements MArg {}
+
+record Instance(String name, List<MArg> args) {
+    Instance {
+        args = List.copyOf(args);
+    }
+}
+
+record MRef(Instance instance) implements MType {}
+
+record MBytes(int size) implements MType {}
+
+record MBits(int size) implements MType {}
+
+record MArray(MType element, int length) implements MType {}
+
+record MSlice(MType element, MType length) implements MType {}
+
+sealed interface MDeclaration permits MAlias, MStruct, MUnion {
+    Instance instance();
+
+    TokenPos pos();
+}
+
+record MAlias(
+    Instance instance,
+    MType target,
+    List<Directive> directives,
+    TokenPos pos
+) implements MDeclaration {}
+
+record MStruct(
+    Instance instance,
+    List<MStructField> fields,
+    List<Directive> directives,
+    TokenPos pos
+) implements MDeclaration {}
+
+record MStructField(
+    String name,
+    MType type,
+    List<Directive> directives,
+    TokenPos pos
+) {}
+
+record MUnion(
+    Instance instance,
+    List<MUnionVariant> variants,
+    MType tag,
+    List<Directive> directives,
+    TokenPos pos
+) implements MDeclaration {}
+
+record MUnionVariant(
+    String name,
+    MType type,
+    List<Directive> directives,
+    TokenPos pos
+) {}
+
+record MProgram(List<MDeclaration> declarations) {}
+
+String monoToString(MArg arg) {
+    return switch (arg) {
+        case MNumber n -> Integer.toString(n.value());
+        case MRef r -> instanceToString(r.instance());
+        case MBytes b -> "(bytes " + b.size() + ")";
+        case MBits b -> "(bits " + b.size() + ")";
+        case MArray a -> "(array " +
+            monoToString(a.element()) +
+            " " +
+            a.length() +
+            ")";
+        case MSlice s -> "(slice " +
+            monoToString(s.element()) +
+            " " +
+            monoToString(s.length()) +
+            ")";
+    };
+}
+
+String instanceToString(Instance instance) {
+    if (instance.args().isEmpty()) {
+        return instance.name();
+    }
+
+    return instance
+        .args()
+        .stream()
+        .map(arg -> monoToString(arg))
+        .collect(Collectors.joining(" ", "(" + instance.name() + " ", ")"));
+}
+
+final class Monomorphizer {
+
+    static final int MAX_SIZE = 256;
+
+    private final Program program;
+    private final Map<String, String> files = new HashMap<>();
+    private final Map<Instance, MDeclaration> done = new LinkedHashMap<>();
+    private final List<Instance> stack = new ArrayList<>();
+
+    Monomorphizer(Program program) {
+        this.program = program;
+
+        for (var module : program.modules()) {
+            for (var decl : module.declarations()) {
+                files.put(module.name() + "/" + decl.name(), module.file());
+            }
+        }
+    }
+
+    MProgram monomorphize() {
+        for (var entry : program.declarations().entrySet()) {
+            if (entry.getValue().params().isEmpty()) {
+                instantiate(
+                    new Instance(entry.getKey(), List.of()),
+                    entry.getValue().pos()
+                );
+            }
+        }
+
+        return new MProgram(List.copyOf(done.values()));
+    }
+
+    private void instantiate(Instance instance, TokenPos at) {
+        if (
+            instance
+                .args()
+                .stream()
+                .mapToInt(arg -> size(arg))
+                .sum() > MAX_SIZE
+        ) {
+            throw new SyntaxError(
+                "arguments of '" +
+                    instance.name() +
+                    "' are too large; does it use itself with growing arguments?",
+                at
+            );
+        }
+
+        if (done.containsKey(instance) || stack.contains(instance)) {
+            return;
+        }
+
+        var decl = program.declarations().get(instance.name());
+        var env = new HashMap<String, MArg>();
+
+        for (int i = 0; i < decl.params().size(); i++) {
+            env.put(decl.params().get(i), instance.args().get(i));
+        }
+
+        stack.add(instance);
+
+        try {
+            done.put(instance, instantiateDeclaration(instance, decl, env));
+        } catch (SyntaxError e) {
+            throw e.inFile(files.get(instance.name()));
+        } finally {
+            stack.removeLast();
+        }
+    }
+
+    private static int size(MArg arg) {
+        return switch (arg) {
+            case MNumber _ -> 1;
+            case MBytes _ -> 1;
+            case MBits _ -> 1;
+            case MArray a -> 1 + size(a.element());
+            case MSlice s -> 1 + size(s.element()) + size(s.length());
+            case MRef r -> 1 +
+                r
+                    .instance()
+                    .args()
+                    .stream()
+                    .mapToInt(a -> size(a))
+                    .sum();
+        };
+    }
+
+    private MDeclaration instantiateDeclaration(
+        Instance instance,
+        Declaration decl,
+        Map<String, MArg> env
+    ) {
+        return switch (decl) {
+            case Alias a -> new MAlias(
+                instance,
+                monoType(a.target(), env),
+                a.directives(),
+                a.pos()
+            );
+            case Struct s -> new MStruct(
+                instance,
+                s
+                    .fields()
+                    .stream()
+                    .map(f ->
+                        new MStructField(
+                            f.name(),
+                            monoType(f.type(), env),
+                            f.directives(),
+                            f.pos()
+                        )
+                    )
+                    .toList(),
+                s.directives(),
+                s.pos()
+            );
+            case Union u -> new MUnion(
+                instance,
+                u
+                    .variants()
+                    .stream()
+                    .map(v ->
+                        new MUnionVariant(
+                            v.name(),
+                            monoType(v.type(), env),
+                            v.directives(),
+                            v.pos()
+                        )
+                    )
+                    .toList(),
+                monoType(u.tag(), env),
+                u.directives(),
+                u.pos()
+            );
+        };
+    }
+
+    private MArg monoArg(Type type, Map<String, MArg> env) {
+        return switch (type) {
+            case NumberType n -> new MNumber(n.value());
+            case ParamType p -> env.get(p.name());
+            default -> monoType(type, env);
+        };
+    }
+
+    private MType monoType(Type type, Map<String, MArg> env) {
+        return switch (type) {
+            case RefType r -> {
+                var instance = new Instance(
+                    r.name(),
+                    r
+                        .args()
+                        .stream()
+                        .map(arg -> monoArg(arg, env))
+                        .toList()
+                );
+                instantiate(instance, r.pos());
+                yield new MRef(instance);
+            }
+            case BytesType b -> new MBytes(monoNumber(b.size(), env));
+            case BitsType b -> new MBits(monoNumber(b.size(), env));
+            case ArrayType a -> new MArray(
+                monoType(a.element(), env),
+                monoNumber(a.size(), env)
+            );
+            case SliceType s -> new MSlice(
+                monoType(s.element(), env),
+                monoType(s.size(), env)
+            );
+            case ParamType p -> {
+                if (!(env.get(p.name()) instanceof MType t)) {
+                    throw new IllegalStateException(
+                        "number parameter '" + p.name() + "' used as a type"
+                    );
+                }
+
+                yield t;
+            }
+            case NumberType n -> throw new IllegalStateException(
+                "number " + n.value() + " used as a type"
+            );
+        };
+    }
+
+    private int monoNumber(Type type, Map<String, MArg> env) {
+        if (!(monoArg(type, env) instanceof MNumber n)) {
+            throw new IllegalStateException("type used as a number");
+        }
+
+        return n.value();
     }
 }
 
@@ -1544,6 +1985,10 @@ TreeNode toTreeNode(Record node) {
             case null -> {
             }
             case TokenPos p -> pos = p;
+            case Instance i -> label.append(" ").append(instanceToString(i));
+            case MArg a -> children.add(
+                new TreeNode(name + ": " + monoToString(a), List.of())
+            );
             case Record r -> {
                 var child = toTreeNode(r);
                 children.add(
@@ -1603,6 +2048,7 @@ String astToString(Record node) {
 enum CLIAction {
     AST,
     RESOLVE,
+    MONO,
 }
 
 List<Module> loadModulesFromFile(String path) throws IOException {
@@ -1625,6 +2071,8 @@ void main(String[] args) throws IOException {
             mode = CLIAction.AST;
         } else if (arg.equals("--resolve")) {
             mode = CLIAction.RESOLVE;
+        } else if (arg.equals("--mono")) {
+            mode = CLIAction.MONO;
         } else if (path == null) {
             path = arg;
         } else {
@@ -1649,6 +2097,13 @@ void main(String[] args) throws IOException {
                 for (var module : program.modules()) {
                     System.out.println(astToString(module));
                 }
+            }
+            case MONO -> {
+                var program = new Resolver().resolve(modules);
+                new KindChecker().check(program);
+                var mono = new Monomorphizer(program).monomorphize();
+
+                System.out.println(astToString(mono));
             }
         }
     } catch (SyntaxError e) {

@@ -243,4 +243,3 @@ Module network examples/network.bajt @3:1
       └─ directives
          ├─ PackDirective @90:7
          └─ EndianDirective LITTLE @90:13
-

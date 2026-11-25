@@ -14,7 +14,9 @@ The built-in type forms are `(bytes N)`, `(bits N)`, `(array T N)` for a fixed n
 elements, and `(slice T L)` for a length-prefixed sequence whose length is stored as `L`.
 
 Declarations can be generic over types and numbers: `(struct (pair A B) ...)` and
-`(type (bytestring N) (array u8 N))`.
+`(type (bytestring N) (array u8 N))`. Whether a parameter is a type or a number is inferred from
+how it is used; a parameter that is never constrained is a type. Sizes in `bytes`, `bits` and
+`array` can be number parameters, e.g. `(type (blob N) (bytes N))`.
 
 Directives, written with `#`, adjust encoding:
 
@@ -31,7 +33,10 @@ imports and type parameters must all have distinct names, otherwise it is an err
 written `(* ... *)` and can be nested.
 
 Compiler pipeline: lexer, S-expression parser, elaboration into a typed AST, module loading,
-name resolution. Still to come: kind checking, monomorphization, layout and codegen.
+name resolution, kind checking, monomorphization. Monomorphization starts from every non-generic
+declaration and creates one instance per generic declaration and argument list it uses, e.g.
+`(network/pair prelude/u16 network/text)`; aliases are kept as instances, not expanded. Still to
+come: layout and codegen.
 
 ## Example
 
@@ -86,6 +91,7 @@ Requires JDK 25. `nix develop` provides a dev shell with it.
 java src/Main.java FILE            # parse FILE and print it back as an S-expression
 java src/Main.java --ast FILE      # load FILE and its imports, print the typed AST of each
 java src/Main.java --resolve FILE  # like --ast, with every name resolved to "module/name"
+java src/Main.java --mono FILE     # kind check and print every instance the schema uses
 java src/Main.java --ast < FILE    # read from stdin; imports are looked up in the current directory
 ```
 
@@ -96,6 +102,7 @@ just                 # list commands
 just parse FILE      # print FILE as an S-expression
 just ast FILE        # print the typed AST of FILE and its imports
 just resolve FILE    # print the resolved AST of FILE and its imports
+just mono FILE       # print the monomorphized instances of FILE and its imports
 just example         # print the typed AST of examples/network.bajt
-just check           # check that every example loads and resolves
+just check           # check that every example loads, resolves and monomorphizes
 ```

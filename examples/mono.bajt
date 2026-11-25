@@ -1,4 +1,0 @@
-(* Monomorphization example *)
-(module mono (
-    (type (numbers N) (array (bytes 1) N))
-))
