@@ -22,6 +22,10 @@ resolve file:
 mono file:
     java {{ main }} --mono {{ file }}
 
+# Generate a C++ header with the model types of a schema
+cpp file:
+    java {{ main }} --cpp {{ file }}
+
 # Print the typed AST of the network example
 ast-example:
     just ast examples/network.bajt
@@ -30,11 +34,14 @@ ast-example:
 resolve-example:
     just resolve examples/network.bajt
 
-# Check that every example loads, resolves, kind checks and monomorphizes without errors
+# Check that every example generates a C++ header that compiles
 check:
     #!/usr/bin/env bash
     set -euo pipefail
+    header=$(mktemp --suffix .hpp)
+    trap 'rm -f "$header"' EXIT
     for file in examples/*.bajt; do
-        java {{ main }} --mono "$file" > /dev/null
+        java {{ main }} --cpp "$file" > "$header"
+        printf '#include "%s"\n' "$header" | c++ -std=c++20 -Wall -Wextra -fsyntax-only -x c++ -
         echo "ok $file"
     done

@@ -1762,6 +1762,13 @@ final class Monomorphizer {
 
 // >-------------------------------------------------------- C++ Code Generation
 
+final class CodegenError extends RuntimeException {
+
+    CodegenError(String message) {
+        super(message);
+    }
+}
+
 final class CppCodeWriter {
 
     private final StringBuilder out = new StringBuilder();
@@ -1808,21 +1815,16 @@ final class CppCodeWriter {
         return this;
     }
 
-    CppCodeWriter semicolon() {
-        out.append(";\n");
-        return this;
-    }
-
     CppCodeWriter include(String name) {
         out.append("#include <").append(name).append(">\n");
         return this;
     }
 
-    CppCodeWriter beginStruct(String name, List<String> params) {
-        if (!params.isEmpty()) {
-            line("template <" + String.join(", ", params) + ">").ident();
-        }
+    CppCodeWriter forwardStruct(String name) {
+        return codeline("struct " + name);
+    }
 
+    CppCodeWriter beginStruct(String name) {
         line("struct " + name + " {").ident();
         return this;
     }
@@ -1833,15 +1835,10 @@ final class CppCodeWriter {
     }
 
     CppCodeWriter structField(String type, String name) {
-        line(type + " " + name).semicolon();
-        return this;
+        return codeline(type + " " + name);
     }
 
-    CppCodeWriter beginClass(String name, List<String> params) {
-        if (!params.isEmpty()) {
-            line("template <" + String.join(", ", params) + ">").ident();
-        }
-
+    CppCodeWriter beginClass(String name) {
         line("class " + name + " {").ident();
         return this;
     }
@@ -1852,8 +1849,7 @@ final class CppCodeWriter {
     }
 
     CppCodeWriter classField(String type, String name) {
-        line(type + " " + name).semicolon();
-        return this;
+        return codeline(type + " " + name);
     }
 
     CppCodeWriter beginFunction(
@@ -1872,15 +1868,7 @@ final class CppCodeWriter {
         return this;
     }
 
-    CppCodeWriter beginEnumClass(
-        String name,
-        String type,
-        List<String> params
-    ) {
-        if (!params.isEmpty()) {
-            line("template <" + String.join(", ", params) + ">").ident();
-        }
-
+    CppCodeWriter beginEnumClass(String name, String type) {
         line("enum class " + name + " : " + type + " {").ident();
         return this;
     }
@@ -1891,20 +1879,11 @@ final class CppCodeWriter {
     }
 
     CppCodeWriter enumClassVariant(String name, String value) {
-        line(name + " = " + value).semicolon();
-        return this;
+        return line(name + " = " + value + ",");
     }
 
-    CppCodeWriter alias(String name, String target, List<String> params) {
-        if (params.isEmpty()) {
-            line("using " + name + " = " + target).semicolon();
-        } else {
-            line("template <" + String.join(", ", params) + ">").ident();
-            line("using " + name + " = " + target).semicolon();
-            unident();
-        }
-
-        return this;
+    CppCodeWriter alias(String name, String target) {
+        return codeline("using " + name + " = " + target);
     }
 
     CppCodeWriter comment(String text) {
@@ -1919,9 +1898,9 @@ final class CppCodeWriter {
     CppCodeWriter commentBlock(String text) {
         line("/*");
         for (var line : text.split("\n")) {
-            line("// " + line);
+            line(" * " + line);
         }
-        line("*/");
+        line(" */");
         return this;
     }
 
@@ -1938,27 +1917,535 @@ final class CppCodeWriter {
 
 final class CppCodeGenerator {
 
+    static final Set<String> keywords = Set.of(
+        "alignas",
+        "alignof",
+        "and",
+        "and_eq",
+        "asm",
+        "auto",
+        "bitand",
+        "bitor",
+        "bool",
+        "break",
+        "case",
+        "catch",
+        "char",
+        "char8_t",
+        "char16_t",
+        "char32_t",
+        "class",
+        "co_await",
+        "co_return",
+        "co_yield",
+        "compl",
+        "concept",
+        "const",
+        "const_cast",
+        "consteval",
+        "constexpr",
+        "constinit",
+        "continue",
+        "decltype",
+        "default",
+        "delete",
+        "do",
+        "double",
+        "dynamic_cast",
+        "else",
+        "enum",
+        "explicit",
+        "export",
+        "extern",
+        "false",
+        "float",
+        "for",
+        "friend",
+        "goto",
+        "if",
+        "inline",
+        "int",
+        "long",
+        "mutable",
+        "namespace",
+        "new",
+        "noexcept",
+        "not",
+        "not_eq",
+        "nullptr",
+        "operator",
+        "or",
+        "or_eq",
+        "private",
+        "protected",
+        "public",
+        "register",
+        "reinterpret_cast",
+        "requires",
+        "return",
+        "short",
+        "signed",
+        "sizeof",
+        "static",
+        "static_assert",
+        "static_cast",
+        "struct",
+        "switch",
+        "template",
+        "this",
+        "thread_local",
+        "throw",
+        "true",
+        "try",
+        "typedef",
+        "typeid",
+        "typename",
+        "union",
+        "unsigned",
+        "using",
+        "virtual",
+        "void",
+        "volatile",
+        "wchar_t",
+        "while",
+        "xor",
+        "xor_eq"
+    );
+
     private final CppCodeWriter writer;
     private final String namespace;
+    private final Map<Instance, MDeclaration> declarations = new HashMap<>();
+    private final Map<Instance, String> names = new HashMap<>();
+    private String currentNamespace = null;
+
+    private boolean namespaceStart = true;
+    private boolean afterStruct = false;
 
     CppCodeGenerator(String namespace, String ident) {
         this.namespace = namespace;
         this.writer = new CppCodeWriter(ident);
     }
 
-    String generate(Program program) {
+    String generate(MProgram program) {
+        for (var decl : program.declarations()) {
+            declarations.put(decl.instance(), decl);
+        }
+
+        assignNames(program);
+        var ordered = order(program);
+
+        writer.line("#pragma once").newline();
+        writer.comment("Generated by bajtek. Do not edit.").newline();
         includes();
+        writer.newline();
+
+        for (var decl : ordered) {
+            if (!(decl instanceof MAlias)) {
+                enterNamespace(decl.instance());
+                writer.forwardStruct(names.get(decl.instance()));
+            }
+        }
+
+        for (var decl : ordered) {
+            enterNamespace(decl.instance());
+
+            switch (decl) {
+                case MAlias a -> emitAlias(a);
+                case MStruct s -> emitStruct(s);
+                case MUnion u -> emitUnion(u);
+            }
+        }
+
+        if (currentNamespace != null) {
+            writer.endNamespace();
+        }
 
         return writer.out.toString();
     }
 
     private void includes() {
         writer
-            .include("cstdint")
-            .include("vector")
             .include("array")
+            .include("bitset")
+            .include("cstddef")
+            .include("cstdint")
             .include("variant")
-            .include("string");
+            .include("vector");
+    }
+
+    private static String identifier(String name) {
+        var id = name.replaceAll("[^A-Za-z0-9_]", "_");
+        return keywords.contains(id) ? id + "_" : id;
+    }
+
+    private static String moduleOf(Instance instance) {
+        return instance.name().substring(0, instance.name().indexOf('/'));
+    }
+
+    private String namespaceOf(Instance instance) {
+        var module = identifier(moduleOf(instance));
+        return namespace + "::" + (module.equals("std") ? "std_" : module);
+    }
+
+    private String name(Instance instance) {
+        var name = names.get(instance);
+
+        if (name != null) {
+            return name;
+        }
+
+        var parts = new ArrayList<String>();
+        parts.add(instance.name().substring(instance.name().indexOf('/') + 1));
+
+        for (var arg : instance.args()) {
+            parts.add(argName(arg));
+        }
+
+        name = identifier(String.join("_", parts));
+        names.put(instance, name);
+        return name;
+    }
+
+    private String argName(MArg arg) {
+        return switch (arg) {
+            case MNumber n -> Integer.toString(n.value());
+            case MRef r -> name(r.instance());
+            case MBytes b -> "bytes_" + b.size();
+            case MBits b -> "bits_" + b.size();
+            case MArray a -> "array_" + argName(a.element()) + "_" + a.length();
+            case MSlice s -> "slice_" + argName(s.element());
+        };
+    }
+
+    private void assignNames(MProgram program) {
+        var taken = new HashMap<String, Instance>();
+        var modules = new HashMap<String, String>();
+
+        for (var decl : program.declarations()) {
+            var instance = decl.instance();
+            var ns = namespaceOf(instance);
+            var module = modules.putIfAbsent(ns, moduleOf(instance));
+
+            if (module != null && !module.equals(moduleOf(instance))) {
+                throw new CodegenError(
+                    "modules '" +
+                        module +
+                        "' and '" +
+                        moduleOf(instance) +
+                        "' both become C++ namespace " +
+                        ns
+                );
+            }
+
+            var qualified = ns + "::" + name(instance);
+            var other = taken.putIfAbsent(qualified, instance);
+
+            if (other != null) {
+                throw new CodegenError(
+                    "'" +
+                        instanceToString(other) +
+                        "' and '" +
+                        instanceToString(instance) +
+                        "' both become C++ type " +
+                        qualified
+                );
+            }
+        }
+    }
+
+    private List<String> memberNames(
+        Instance owner,
+        List<String> members,
+        Set<String> reserved
+    ) {
+        var out = new ArrayList<String>();
+
+        for (var member : members) {
+            var id = identifier(member);
+
+            while (reserved.contains(id)) {
+                id = id + "_";
+            }
+
+            if (out.contains(id)) {
+                throw new CodegenError(
+                    "two members of '" +
+                        instanceToString(owner) +
+                        "' both become C++ name " +
+                        id
+                );
+            }
+
+            out.add(id);
+        }
+
+        return out;
+    }
+
+    // C++ needs a full definition of every type stored by value, and every alias before it is
+    // used. Structs and unions are forward declared, which is enough for std::vector elements.
+    private List<MDeclaration> order(MProgram program) {
+        var done = new LinkedHashSet<Instance>();
+        var visiting = new HashSet<Instance>();
+
+        for (var decl : program.declarations()) {
+            visit(decl.instance(), visiting, done);
+        }
+
+        return done.stream().map(declarations::get).toList();
+    }
+
+    private void visit(
+        Instance instance,
+        Set<Instance> visiting,
+        Set<Instance> done
+    ) {
+        if (done.contains(instance)) {
+            return;
+        }
+
+        if (!visiting.add(instance)) {
+            throw new CodegenError(
+                "'" +
+                    instanceToString(instance) +
+                    "' contains itself by value or through an alias, which C++ cannot express"
+            );
+        }
+
+        for (var dependency : dependencies(declarations.get(instance))) {
+            visit(dependency, visiting, done);
+        }
+
+        visiting.remove(instance);
+        done.add(instance);
+    }
+
+    private Set<Instance> dependencies(MDeclaration decl) {
+        var out = new LinkedHashSet<Instance>();
+
+        switch (decl) {
+            case MAlias a -> declared(a.target(), out);
+            case MStruct s -> {
+                for (var field : s.fields()) {
+                    complete(field.type(), out, new HashSet<>());
+                }
+            }
+            case MUnion u -> {
+                for (var variant : u.variants()) {
+                    complete(variant.type(), out, new HashSet<>());
+                }
+            }
+        }
+
+        return out;
+    }
+
+    private void declared(MType type, Set<Instance> out) {
+        switch (type) {
+            case MRef r -> {
+                if (declarations.get(r.instance()) instanceof MAlias) {
+                    out.add(r.instance());
+                }
+            }
+            case MArray a -> declared(a.element(), out);
+            case MSlice s -> declared(s.element(), out);
+            case MBytes _ -> {
+            }
+            case MBits _ -> {
+            }
+        }
+    }
+
+    // A value of the type is stored, so everything it is made of must be defined, including
+    // whatever an alias stands for.
+    private void complete(MType type, Set<Instance> out, Set<Instance> seen) {
+        switch (type) {
+            case MRef r -> {
+                out.add(r.instance());
+
+                if (
+                    declarations.get(r.instance()) instanceof MAlias a &&
+                    seen.add(r.instance())
+                ) {
+                    complete(a.target(), out, seen);
+                }
+            }
+            case MArray a -> complete(a.element(), out, seen);
+            case MSlice s -> declared(s.element(), out);
+            case MBytes _ -> {
+            }
+            case MBits _ -> {
+            }
+        }
+    }
+
+    private void enterNamespace(Instance instance) {
+        var ns = namespaceOf(instance);
+
+        if (ns.equals(currentNamespace)) {
+            return;
+        }
+
+        if (currentNamespace != null) {
+            writer.endNamespace().newline();
+        }
+
+        writer.beginNamespace(ns);
+        currentNamespace = ns;
+        namespaceStart = true;
+        afterStruct = false;
+    }
+
+    private void separate(boolean struct) {
+        if (!namespaceStart && (struct || afterStruct)) {
+            writer.newline();
+        }
+
+        namespaceStart = false;
+        afterStruct = struct;
+    }
+
+    private String type(MType type) {
+        return switch (type) {
+            case MRef r -> "::" +
+                namespaceOf(r.instance()) +
+                "::" +
+                names.get(r.instance());
+            case MBytes b -> "std::array<std::byte, " + b.size() + ">";
+            case MBits b -> bits(b.size());
+            case MArray a -> "std::array<" +
+                type(a.element()) +
+                ", " +
+                a.length() +
+                ">";
+            case MSlice s -> "std::vector<" + type(s.element()) + ">";
+        };
+    }
+
+    private static String bits(int size) {
+        if (size <= 8) return "std::uint8_t";
+        if (size <= 16) return "std::uint16_t";
+        if (size <= 32) return "std::uint32_t";
+        if (size <= 64) return "std::uint64_t";
+        return "std::bitset<" + size + ">";
+    }
+
+    private String nativeType(MAlias alias, String kind) {
+        if (!(alias.target() instanceof MBytes bytes)) {
+            throw new CodegenError(
+                "'" +
+                    instanceToString(alias.instance()) +
+                    "' is #native, so it has to be an alias of (bytes N)"
+            );
+        }
+
+        var type = switch (kind + " " + bytes.size()) {
+            case "unsigned 1" -> "std::uint8_t";
+            case "unsigned 2" -> "std::uint16_t";
+            case "unsigned 4" -> "std::uint32_t";
+            case "unsigned 8" -> "std::uint64_t";
+            case "signed 1" -> "std::int8_t";
+            case "signed 2" -> "std::int16_t";
+            case "signed 4" -> "std::int32_t";
+            case "signed 8" -> "std::int64_t";
+            case "float 4" -> "float";
+            case "float 8" -> "double";
+            case "bool 1" -> "bool";
+            case "char 1" -> "char";
+            default -> null;
+        };
+
+        if (type == null) {
+            throw new CodegenError(
+                "no C++ type for (#native " +
+                    kind +
+                    ") of " +
+                    bytes.size() +
+                    " byte(s) in '" +
+                    instanceToString(alias.instance()) +
+                    "'"
+            );
+        }
+
+        return type;
+    }
+
+    private void emitAlias(MAlias alias) {
+        var target = alias
+            .directives()
+            .stream()
+            .filter(d -> d instanceof NativeDirective)
+            .map(d -> nativeType(alias, ((NativeDirective) d).arg()))
+            .findFirst()
+            .orElseGet(() -> type(alias.target()));
+
+        separate(false);
+        writer.alias(names.get(alias.instance()), target);
+    }
+
+    private void emitStruct(MStruct struct) {
+        var fields = memberNames(
+            struct.instance(),
+            struct
+                .fields()
+                .stream()
+                .map(f -> f.name())
+                .toList(),
+            Set.of()
+        );
+
+        separate(true);
+        writer.beginStruct(names.get(struct.instance()));
+
+        for (int i = 0; i < fields.size(); i++) {
+            writer.structField(
+                type(struct.fields().get(i).type()),
+                fields.get(i)
+            );
+        }
+
+        writer.endStruct();
+    }
+
+    // Each variant is a wrapper struct, so variants keep their names and two variants of the
+    // same type stay distinct. The variant member is called `value`, so no wrapper may be.
+    private void emitUnion(MUnion union) {
+        if (union.variants().isEmpty()) {
+            throw new CodegenError(
+                "'" + instanceToString(union.instance()) + "' has no variants"
+            );
+        }
+
+        var variants = memberNames(
+            union.instance(),
+            union
+                .variants()
+                .stream()
+                .map(v -> v.name())
+                .toList(),
+            Set.of("value")
+        );
+
+        separate(true);
+        writer.beginStruct(names.get(union.instance()));
+
+        for (int i = 0; i < variants.size(); i++) {
+            writer.line(
+                "struct " +
+                    variants.get(i) +
+                    " { " +
+                    type(union.variants().get(i).type()) +
+                    " value; };"
+            );
+        }
+
+        writer
+            .newline()
+            .structField(
+                "std::variant<" + String.join(", ", variants) + ">",
+                "value"
+            )
+            .endStruct();
     }
 }
 
@@ -2049,6 +2536,7 @@ enum CLIAction {
     AST,
     RESOLVE,
     MONO,
+    CPP,
 }
 
 List<Module> loadModulesFromFile(String path) throws IOException {
@@ -2073,6 +2561,8 @@ void main(String[] args) throws IOException {
             mode = CLIAction.RESOLVE;
         } else if (arg.equals("--mono")) {
             mode = CLIAction.MONO;
+        } else if (arg.equals("--cpp")) {
+            mode = CLIAction.CPP;
         } else if (path == null) {
             path = arg;
         } else {
@@ -2105,8 +2595,17 @@ void main(String[] args) throws IOException {
 
                 System.out.println(astToString(mono));
             }
+            case CPP -> {
+                var program = new Resolver().resolve(modules);
+                new KindChecker().check(program);
+                var mono = new Monomorphizer(program).monomorphize();
+
+                System.out.print(
+                    new CppCodeGenerator("bajtek", "    ").generate(mono)
+                );
+            }
         }
-    } catch (SyntaxError e) {
+    } catch (SyntaxError | CodegenError e) {
         System.err.println(e.getMessage());
         System.exit(1);
     }

@@ -36,7 +36,13 @@ Compiler pipeline: lexer, S-expression parser, elaboration into a typed AST, mod
 name resolution, kind checking, monomorphization. Monomorphization starts from every non-generic
 declaration and creates one instance per generic declaration and argument list it uses, e.g.
 `(network/pair prelude/u16 network/text)`; aliases are kept as instances, not expanded. Still to
-come: layout and codegen.
+come: layout and serialization code.
+
+C++ codegen emits one header with a model type per instance, in `namespace bajtek::<module>`:
+aliases become `using`, structs become structs, and a union becomes a struct holding a
+`std::variant` of one wrapper struct per variant, e.g. `message::leave{42}`. Instance names are
+mangled from their arguments, e.g. `pair_u16_text`, and names that are C++ keywords get a trailing
+`_`.
 
 ## Example
 
@@ -92,6 +98,7 @@ java src/Main.java FILE            # parse FILE and print it back as an S-expres
 java src/Main.java --ast FILE      # load FILE and its imports, print the typed AST of each
 java src/Main.java --resolve FILE  # like --ast, with every name resolved to "module/name"
 java src/Main.java --mono FILE     # kind check and print every instance the schema uses
+java src/Main.java --cpp FILE      # generate a C++ header with the model types
 java src/Main.java --ast < FILE    # read from stdin; imports are looked up in the current directory
 ```
 
@@ -103,6 +110,7 @@ just parse FILE      # print FILE as an S-expression
 just ast FILE        # print the typed AST of FILE and its imports
 just resolve FILE    # print the resolved AST of FILE and its imports
 just mono FILE       # print the monomorphized instances of FILE and its imports
+just cpp FILE        # generate a C++ header for FILE and its imports
 just example         # print the typed AST of examples/network.bajt
-just check           # check that every example loads, resolves and monomorphizes
+just check           # check that every example generates a C++ header that compiles
 ```
