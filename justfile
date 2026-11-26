@@ -22,9 +22,13 @@ resolve file:
 mono file:
     java {{ main }} --mono {{ file }}
 
-# Generate a C++ header with the model types of a schema
-cpp file:
-    java {{ main }} --cpp {{ file }}
+# Generate a C++ header with the model types of a schema into a directory
+cpp file out:
+    java {{ main }} --cpp {{ file }} -o {{ out }}
+
+# Generate Java sources with the model types of a schema into a directory
+java file out:
+    java {{ main }} --java {{ file }} -o {{ out }}
 
 # Print the typed AST of the network example
 ast-example:
@@ -34,14 +38,19 @@ ast-example:
 resolve-example:
     just resolve examples/network.bajt
 
-# Check that every example generates a C++ header that compiles
+# Check that every example generates C++ and Java code that compiles
 check:
     #!/usr/bin/env bash
     set -euo pipefail
-    header=$(mktemp --suffix .hpp)
-    trap 'rm -f "$header"' EXIT
+    out=$(mktemp -d)
+    trap 'rm -rf "$out"' EXIT
     for file in examples/*.bajt; do
-        java {{ main }} --cpp "$file" > "$header"
-        printf '#include "%s"\n' "$header" | c++ -std=c++20 -Wall -Wextra -fsyntax-only -x c++ -
+        name=$(basename "$file" .bajt)
+        java {{ main }} --cpp "$file" -o "$out/$name/cpp" 2> /dev/null
+        printf '#include "%s"\n' "$out/$name/cpp/$name.hpp" | c++ -std=c++20 -Wall -Wextra -fsyntax-only -x c++ -
+        java {{ main }} --java "$file" -o "$out/$name/java" 2> /dev/null
+        if [ -d "$out/$name/java" ]; then
+            javac -Xlint:all -Werror -d "$out/$name/classes" $(find "$out/$name/java" -name '*.java')
+        fi
         echo "ok $file"
     done

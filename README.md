@@ -38,11 +38,20 @@ declaration and creates one instance per generic declaration and argument list i
 `(network/pair prelude/u16 network/text)`; aliases are kept as instances, not expanded. Still to
 come: layout and serialization code.
 
-C++ codegen emits one header with a model type per instance, in `namespace bajtek::<module>`:
-aliases become `using`, structs become structs, and a union becomes a struct holding a
-`std::variant` of one wrapper struct per variant, e.g. `message::leave{42}`. Instance names are
-mangled from their arguments, e.g. `pair_u16_text`, and names that are C++ keywords get a trailing
-`_`.
+Code generators write into an output directory. Instance names are mangled from their arguments,
+e.g. `(pair u16 text)`, and each generator follows its language's naming conventions: C++ names
+are snake_case, like `pair_u16_text`, while Java types are PascalCase, like `PairU16Text`, and Java
+fields are camelCase. Names that the target language does not allow get a trailing `_`.
+
+C++ codegen emits one header, `<module>.hpp` for the input module, with a model type per instance,
+in `namespace bajtek::<module>`: aliases become `using`, structs become structs, and a union becomes
+a struct holding a `std::variant` of one wrapper struct per variant, e.g. `message::leave{42}`.
+
+Java codegen emits one file per module, e.g. `bajtek/Network.java`, holding a class with one nested
+type per instance. Aliases are nominal, so each becomes a record wrapping its target, except
+`#native` ones, which become primitives (unsigned values use the signed type of the same size).
+Structs become records, and a union becomes a sealed interface with one nested record per variant,
+e.g. `new Message.Leave(42L)`. `bytes`, `array` and `slice` all become `java.util.List`.
 
 ## Example
 
@@ -94,23 +103,25 @@ See [`examples/`](examples) for the prelude and a larger network protocol schema
 Requires JDK 25. `nix develop` provides a dev shell with it.
 
 ```sh
-java src/Main.java FILE            # parse FILE and print it back as an S-expression
-java src/Main.java --ast FILE      # load FILE and its imports, print the typed AST of each
-java src/Main.java --resolve FILE  # like --ast, with every name resolved to "module/name"
-java src/Main.java --mono FILE     # kind check and print every instance the schema uses
-java src/Main.java --cpp FILE      # generate a C++ header with the model types
-java src/Main.java --ast < FILE    # read from stdin; imports are looked up in the current directory
+java src/Main.java FILE                # parse FILE and print it back as an S-expression
+java src/Main.java --ast FILE          # load FILE and its imports, print the typed AST of each
+java src/Main.java --resolve FILE      # like --ast, with every name resolved to "module/name"
+java src/Main.java --mono FILE         # kind check and print every instance the schema uses
+java src/Main.java --cpp FILE -o DIR   # generate a C++ header with the model types into DIR
+java src/Main.java --java FILE -o DIR  # generate Java sources with the model types into DIR
+java src/Main.java --ast < FILE        # read from stdin; imports are looked up in the current directory
 ```
 
 With [just](https://github.com/casey/just):
 
 ```sh
-just                 # list commands
-just parse FILE      # print FILE as an S-expression
-just ast FILE        # print the typed AST of FILE and its imports
-just resolve FILE    # print the resolved AST of FILE and its imports
-just mono FILE       # print the monomorphized instances of FILE and its imports
-just cpp FILE        # generate a C++ header for FILE and its imports
-just example         # print the typed AST of examples/network.bajt
-just check           # check that every example generates a C++ header that compiles
+just                # list commands
+just parse FILE     # print FILE as an S-expression
+just ast FILE       # print the typed AST of FILE and its imports
+just resolve FILE   # print the resolved AST of FILE and its imports
+just mono FILE      # print the monomorphized instances of FILE and its imports
+just cpp FILE DIR   # generate a C++ header for FILE and its imports into DIR
+just java FILE DIR  # generate Java sources for FILE and its imports into DIR
+just example        # print the typed AST of examples/network.bajt
+just check          # check that every example generates C++ and Java code that compiles
 ```

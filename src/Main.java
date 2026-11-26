@@ -1760,7 +1760,7 @@ final class Monomorphizer {
     }
 }
 
-// >-------------------------------------------------------- C++ Code Generation
+// >------------------------------------------------------------ Code Generation
 
 final class CodegenError extends RuntimeException {
 
@@ -1769,31 +1769,40 @@ final class CodegenError extends RuntimeException {
     }
 }
 
-final class CppCodeWriter {
+abstract class CodeWriter<W extends CodeWriter<W>> {
 
     private final StringBuilder out = new StringBuilder();
     private final String ident_unit;
     private int ident_level = 0;
 
-    CppCodeWriter(String ident_unit) {
+    CodeWriter(String ident_unit) {
         this.ident_unit = ident_unit;
     }
 
-    CppCodeWriter ident() {
-        ident_level++;
-        return this;
+    @SuppressWarnings("unchecked")
+    private W self() {
+        return (W) this;
     }
 
-    CppCodeWriter unident() {
+    String code() {
+        return out.toString();
+    }
+
+    W ident() {
+        ident_level++;
+        return self();
+    }
+
+    W unident() {
         if (ident_level == 0) {
             throw new IllegalStateException("unident() called too many times");
         }
 
         ident_level--;
-        return this;
+        return self();
     }
 
-    CppCodeWriter line(String text) {
+    W line(String text) {
         if (!text.isEmpty()) {
             for (int i = 0; i < ident_level; i++) {
                 out.append(ident_unit);
@@ -1803,21 +1812,183 @@ final class CppCodeWriter {
         }
 
         out.append("\n");
-        return this;
+        return self();
     }
 
-    CppCodeWriter codeline(String text) {
+    W codeline(String text) {
         return line(text + ";");
     }
 
-    CppCodeWriter newline() {
+    W newline() {
         out.append("\n");
-        return this;
+        return self();
+    }
+
+    W beginBlock(String header) {
+        return line(header + " {").ident();
+    }
+
+    W endBlock(String closing) {
+        return unident().line(closing);
+    }
+
+    W comment(String text) {
+        if (text.contains("\n")) {
+            return commentBlock(text);
+        }
+
+        return line("// " + text);
+    }
+
+    W commentBlock(String text) {
+        line("/*");
+        for (var line : text.split("\n")) {
+            line(" * " + line);
+        }
+        return line(" */");
+    }
+}
+
+final class NameMangler {
+
+    private final Set<String> keywords;
+    private final String language;
+
+    NameMangler(Set<String> keywords, String language) {
+        this.keywords = keywords;
+        this.language = language;
+    }
+
+    String identifier(String name) {
+        var id = name.replaceAll("[^A-Za-z0-9_]", "_");
+        return keywords.contains(id) ? id + "_" : id;
+    }
+
+    // Splits a schema name like `chat-message` or `chatMessage` into its words, which each
+    // language joins in its own style.
+    static List<String> words(String name) {
+        return Arrays.stream(name.split("[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])"))
+            .filter(w -> !w.isEmpty())
+            .toList();
+    }
+
+    // The words of an instance name, mangled from its arguments, e.g. `pair u16 text`.
+    static List<String> words(Instance instance) {
+        var out = new ArrayList<>(
+            words(instance.name().substring(instance.name().indexOf('/') + 1))
+        );
+
+        for (var arg : instance.args()) {
+            argWords(arg, out);
+        }
+
+        return out;
+    }
+
+    private static void argWords(MArg arg, List<String> out) {
+        switch (arg) {
+            case MNumber n -> out.add(Integer.toString(n.value()));
+            case MRef r -> out.addAll(words(r.instance()));
+            case MBytes b -> out.addAll(
+                List.of("bytes", Integer.toString(b.size()))
+            );
+            case MBits b -> out.addAll(
+                List.of("bits", Integer.toString(b.size()))
+            );
+            case MArray a -> {
+                out.add("array");
+                argWords(a.element(), out);
+                out.add(Integer.toString(a.length()));
+            }
+            case MSlice s -> {
+                out.add("slice");
+                argWords(s.element(), out);
+            }
+        }
+    }
+
+    List<String> memberNames(
+        Instance owner,
+        List<String> members,
+        Set<String> reserved
+    ) {
+        var out = new ArrayList<String>();
+
+        for (var member : members) {
+            var id = identifier(member);
+
+            while (reserved.contains(id)) {
+                id = id + "_";
+            }
+
+            if (out.contains(id)) {
+                throw new CodegenError(
+                    "two members of '" +
+                        instanceToString(owner) +
+                        "' both become " +
+                        language +
+                        " name " +
+                        id
+                );
+            }
+
+            out.add(id);
+        }
+
+        return out;
+    }
+}
+
+String moduleOf(Instance instance) {
+    return instance.name().substring(0, instance.name().indexOf('/'));
+}
+
+String nativeKind(MAlias alias) {
+    return alias
+        .directives()
+        .stream()
+        .filter(d -> d instanceof NativeDirective)
+        .map(d -> ((NativeDirective) d).arg())
+        .findFirst()
+        .orElse(null);
+}
+
+int nativeSize(MAlias alias) {
+    if (!(alias.target() instanceof MBytes bytes)) {
+        throw new CodegenError(
+            "'" +
+                instanceToString(alias.instance()) +
+                "' is #native, so it has to be an alias of (bytes N)"
+        );
+    }
+
+    return bytes.size();
+}
+
+CodegenError noNativeType(MAlias alias, String language) {
+    return new CodegenError(
+        "no " +
+            language +
+            " type for (#native " +
+            nativeKind(alias) +
+            ") of " +
+            nativeSize(alias) +
+            " byte(s) in '" +
+            instanceToString(alias.instance()) +
+            "'"
+    );
+}
+
+// >-------------------------------------------------------- C++ Code Generation
+
+final class CppCodeWriter extends CodeWriter<CppCodeWriter> {
+
+    CppCodeWriter(String ident_unit) {
+        super(ident_unit);
     }
 
     CppCodeWriter include(String name) {
-        out.append("#include <").append(name).append(">\n");
-        return this;
+        return line("#include <" + name + ">");
     }
 
     CppCodeWriter forwardStruct(String name) {
@@ -1825,13 +1996,11 @@ final class CppCodeWriter {
     }
 
     CppCodeWriter beginStruct(String name) {
-        line("struct " + name + " {").ident();
-        return this;
+        return beginBlock("struct " + name);
     }
 
     CppCodeWriter endStruct() {
-        unident().line("};");
-        return this;
+        return endBlock("};");
     }
 
     CppCodeWriter structField(String type, String name) {
@@ -1839,13 +2008,11 @@ final class CppCodeWriter {
     }
 
     CppCodeWriter beginClass(String name) {
-        line("class " + name + " {").ident();
-        return this;
+        return beginBlock("class " + name);
     }
 
     CppCodeWriter endClass() {
-        unident().line("};");
-        return this;
+        return endBlock("};");
     }
 
     CppCodeWriter classField(String type, String name) {
@@ -1857,25 +2024,21 @@ final class CppCodeWriter {
         String name,
         List<String> params
     ) {
-        line(
-            returnType + " " + name + "(" + String.join(", ", params) + ") {"
-        ).ident();
-        return this;
+        return beginBlock(
+            returnType + " " + name + "(" + String.join(", ", params) + ")"
+        );
     }
 
     CppCodeWriter endFunction() {
-        unident().line("}");
-        return this;
+        return endBlock("}");
     }
 
     CppCodeWriter beginEnumClass(String name, String type) {
-        line("enum class " + name + " : " + type + " {").ident();
-        return this;
+        return beginBlock("enum class " + name + " : " + type);
     }
 
     CppCodeWriter endEnumClass() {
-        unident().line("};");
-        return this;
+        return endBlock("};");
     }
 
     CppCodeWriter enumClassVariant(String name, String value) {
@@ -1886,32 +2049,12 @@ final class CppCodeWriter {
         return codeline("using " + name + " = " + target);
     }
 
-    CppCodeWriter comment(String text) {
-        if (text.contains("\n")) {
-            return commentBlock(text);
-        }
-
-        line("// " + text);
-        return this;
-    }
-
-    CppCodeWriter commentBlock(String text) {
-        line("/*");
-        for (var line : text.split("\n")) {
-            line(" * " + line);
-        }
-        line(" */");
-        return this;
-    }
-
     CppCodeWriter beginNamespace(String name) {
-        line("namespace " + name + " {").ident();
-        return this;
+        return beginBlock("namespace " + name);
     }
 
     CppCodeWriter endNamespace() {
-        unident().line("}");
-        return this;
+        return endBlock("}");
     }
 }
 
@@ -2014,6 +2157,7 @@ final class CppCodeGenerator {
 
     private final CppCodeWriter writer;
     private final String namespace;
+    private final NameMangler mangler = new NameMangler(keywords, "C++");
     private final Map<Instance, MDeclaration> declarations = new HashMap<>();
     private final Map<Instance, String> names = new HashMap<>();
     private String currentNamespace = null;
@@ -2026,7 +2170,7 @@ final class CppCodeGenerator {
         this.writer = new CppCodeWriter(ident);
     }
 
-    String generate(MProgram program) {
+    Map<String, String> generate(MProgram program, String header) {
         for (var decl : program.declarations()) {
             declarations.put(decl.instance(), decl);
         }
@@ -2060,7 +2204,7 @@ final class CppCodeGenerator {
             writer.endNamespace();
         }
 
-        return writer.out.toString();
+        return Map.of(header + ".hpp", writer.code());
     }
 
     private void includes() {
@@ -2073,48 +2217,11 @@ final class CppCodeGenerator {
             .include("vector");
     }
 
-    private static String identifier(String name) {
-        var id = name.replaceAll("[^A-Za-z0-9_]", "_");
-        return keywords.contains(id) ? id + "_" : id;
-    }
-
-    private static String moduleOf(Instance instance) {
-        return instance.name().substring(0, instance.name().indexOf('/'));
-    }
-
     private String namespaceOf(Instance instance) {
-        var module = identifier(moduleOf(instance));
+        var module = mangler.identifier(
+            snake(NameMangler.words(moduleOf(instance)))
+        );
         return namespace + "::" + (module.equals("std") ? "std_" : module);
-    }
-
-    private String name(Instance instance) {
-        var name = names.get(instance);
-
-        if (name != null) {
-            return name;
-        }
-
-        var parts = new ArrayList<String>();
-        parts.add(instance.name().substring(instance.name().indexOf('/') + 1));
-
-        for (var arg : instance.args()) {
-            parts.add(argName(arg));
-        }
-
-        name = identifier(String.join("_", parts));
-        names.put(instance, name);
-        return name;
-    }
-
-    private String argName(MArg arg) {
-        return switch (arg) {
-            case MNumber n -> Integer.toString(n.value());
-            case MRef r -> name(r.instance());
-            case MBytes b -> "bytes_" + b.size();
-            case MBits b -> "bits_" + b.size();
-            case MArray a -> "array_" + argName(a.element()) + "_" + a.length();
-            case MSlice s -> "slice_" + argName(s.element());
-        };
     }
 
     private void assignNames(MProgram program) {
@@ -2137,7 +2244,8 @@ final class CppCodeGenerator {
                 );
             }
 
-            var qualified = ns + "::" + name(instance);
+            var name = mangler.identifier(snake(NameMangler.words(instance)));
+            var qualified = ns + "::" + name;
             var other = taken.putIfAbsent(qualified, instance);
 
             if (other != null) {
@@ -2150,36 +2258,9 @@ final class CppCodeGenerator {
                         qualified
                 );
             }
+
+            names.put(instance, name);
         }
-    }
-
-    private List<String> memberNames(
-        Instance owner,
-        List<String> members,
-        Set<String> reserved
-    ) {
-        var out = new ArrayList<String>();
-
-        for (var member : members) {
-            var id = identifier(member);
-
-            while (reserved.contains(id)) {
-                id = id + "_";
-            }
-
-            if (out.contains(id)) {
-                throw new CodegenError(
-                    "two members of '" +
-                        instanceToString(owner) +
-                        "' both become C++ name " +
-                        id
-                );
-            }
-
-            out.add(id);
-        }
-
-        return out;
     }
 
     // C++ needs a full definition of every type stored by value, and every alias before it is
@@ -2208,7 +2289,8 @@ final class CppCodeGenerator {
             throw new CodegenError(
                 "'" +
                     instanceToString(instance) +
-                    "' contains itself by value or through an alias, which C++ cannot express"
+                    "' contains itself by value or through an alias, which C++ cannot" +
+                    " express"
             );
         }
 
@@ -2322,6 +2404,14 @@ final class CppCodeGenerator {
         };
     }
 
+    // C++ names are snake_case, like the standard library.
+    private static String snake(List<String> words) {
+        return words
+            .stream()
+            .map(w -> w.toLowerCase())
+            .collect(Collectors.joining("_"));
+    }
+
     private static String bits(int size) {
         if (size <= 8) return "std::uint8_t";
         if (size <= 16) return "std::uint16_t";
@@ -2331,15 +2421,7 @@ final class CppCodeGenerator {
     }
 
     private String nativeType(MAlias alias, String kind) {
-        if (!(alias.target() instanceof MBytes bytes)) {
-            throw new CodegenError(
-                "'" +
-                    instanceToString(alias.instance()) +
-                    "' is #native, so it has to be an alias of (bytes N)"
-            );
-        }
-
-        var type = switch (kind + " " + bytes.size()) {
+        var type = switch (kind + " " + nativeSize(alias)) {
             case "unsigned 1" -> "std::uint8_t";
             case "unsigned 2" -> "std::uint16_t";
             case "unsigned 4" -> "std::uint32_t";
@@ -2352,44 +2434,28 @@ final class CppCodeGenerator {
             case "float 8" -> "double";
             case "bool 1" -> "bool";
             case "char 1" -> "char";
-            default -> null;
+            default -> throw noNativeType(alias, "C++");
         };
-
-        if (type == null) {
-            throw new CodegenError(
-                "no C++ type for (#native " +
-                    kind +
-                    ") of " +
-                    bytes.size() +
-                    " byte(s) in '" +
-                    instanceToString(alias.instance()) +
-                    "'"
-            );
-        }
 
         return type;
     }
 
     private void emitAlias(MAlias alias) {
-        var target = alias
-            .directives()
-            .stream()
-            .filter(d -> d instanceof NativeDirective)
-            .map(d -> nativeType(alias, ((NativeDirective) d).arg()))
-            .findFirst()
-            .orElseGet(() -> type(alias.target()));
+        var kind = nativeKind(alias);
+        var target =
+            kind != null ? nativeType(alias, kind) : type(alias.target());
 
         separate(false);
         writer.alias(names.get(alias.instance()), target);
     }
 
     private void emitStruct(MStruct struct) {
-        var fields = memberNames(
+        var fields = mangler.memberNames(
             struct.instance(),
             struct
                 .fields()
                 .stream()
-                .map(f -> f.name())
+                .map(f -> snake(NameMangler.words(f.name())))
                 .toList(),
             Set.of()
         );
@@ -2408,7 +2474,8 @@ final class CppCodeGenerator {
     }
 
     // Each variant is a wrapper struct, so variants keep their names and two variants of the
-    // same type stay distinct. The variant member is called `value`, so no wrapper may be.
+    // same type stay distinct. The variant member is called `value`, so no wrapper may be, and a
+    // nested struct cannot have the name of the union holding it either.
     private void emitUnion(MUnion union) {
         if (union.variants().isEmpty()) {
             throw new CodegenError(
@@ -2416,18 +2483,19 @@ final class CppCodeGenerator {
             );
         }
 
-        var variants = memberNames(
+        var name = names.get(union.instance());
+        var variants = mangler.memberNames(
             union.instance(),
             union
                 .variants()
                 .stream()
-                .map(v -> v.name())
+                .map(v -> snake(NameMangler.words(v.name())))
                 .toList(),
-            Set.of("value")
+            Set.of("value", name)
         );
 
         separate(true);
-        writer.beginStruct(names.get(union.instance()));
+        writer.beginStruct(name);
 
         for (int i = 0; i < variants.size(); i++) {
             writer.line(
@@ -2446,6 +2514,456 @@ final class CppCodeGenerator {
                 "value"
             )
             .endStruct();
+    }
+}
+
+// >------------------------------------------------------- Java Code Generation
+
+final class JavaCodeWriter extends CodeWriter<JavaCodeWriter> {
+
+    JavaCodeWriter(String ident_unit) {
+        super(ident_unit);
+    }
+
+    JavaCodeWriter packageDeclaration(String name) {
+        return codeline("package " + name);
+    }
+
+    JavaCodeWriter beginClass(String modifiers, String name) {
+        return beginBlock(modifiers + "class " + name);
+    }
+
+    JavaCodeWriter endClass() {
+        return endBlock("}");
+    }
+
+    JavaCodeWriter beginSealedInterface(String modifiers, String name) {
+        return beginBlock(modifiers + "sealed interface " + name);
+    }
+
+    JavaCodeWriter endInterface() {
+        return endBlock("}");
+    }
+
+    // A record without a body, on one line when it has at most one component.
+    JavaCodeWriter record(
+        String modifiers,
+        String name,
+        List<String> components,
+        String implemented
+    ) {
+        var head = modifiers + "record " + name + "(";
+        var tail =
+            ")" +
+            (implemented != null ? " implements " + implemented : "") +
+            " {}";
+
+        if (components.size() <= 1) {
+            return line(head + String.join("", components) + tail);
+        }
+
+        line(head).ident();
+
+        for (int i = 0; i < components.size(); i++) {
+            line(components.get(i) + (i < components.size() - 1 ? "," : ""));
+        }
+
+        return unident().line(tail);
+    }
+}
+
+final class JavaCodeGenerator {
+
+    static final Set<String> keywords = Set.of(
+        "_",
+        "abstract",
+        "assert",
+        "boolean",
+        "break",
+        "byte",
+        "case",
+        "catch",
+        "char",
+        "class",
+        "const",
+        "continue",
+        "default",
+        "do",
+        "double",
+        "else",
+        "enum",
+        "extends",
+        "false",
+        "final",
+        "finally",
+        "float",
+        "for",
+        "goto",
+        "if",
+        "implements",
+        "import",
+        "instanceof",
+        "int",
+        "interface",
+        "long",
+        "native",
+        "new",
+        "null",
+        "package",
+        "permits",
+        "private",
+        "protected",
+        "public",
+        "record",
+        "return",
+        "sealed",
+        "short",
+        "static",
+        "strictfp",
+        "super",
+        "switch",
+        "synchronized",
+        "this",
+        "throw",
+        "throws",
+        "transient",
+        "true",
+        "try",
+        "var",
+        "void",
+        "volatile",
+        "while",
+        "yield"
+    );
+
+    static final Set<String> recordMethods = Set.of(
+        "clone",
+        "finalize",
+        "getClass",
+        "hashCode",
+        "notify",
+        "notifyAll",
+        "toString",
+        "wait"
+    );
+
+    static final Map<String, String> boxes = Map.of(
+        "byte",
+        "java.lang.Byte",
+        "short",
+        "java.lang.Short",
+        "int",
+        "java.lang.Integer",
+        "long",
+        "java.lang.Long",
+        "float",
+        "java.lang.Float",
+        "double",
+        "java.lang.Double",
+        "boolean",
+        "java.lang.Boolean"
+    );
+
+    private final String pkg;
+    private final String ident;
+    private final NameMangler mangler = new NameMangler(keywords, "Java");
+    private final Map<Instance, String> natives = new HashMap<>();
+    private final Map<String, String> holders = new HashMap<>();
+    private final Map<Instance, String> names = new HashMap<>();
+
+    // Types are always written fully qualified, which breaks if a class in scope has the name of
+    // the first package segment, so no generated class may be called that or `java`.
+    private final Set<String> reserved;
+
+    JavaCodeGenerator(String pkg, String ident) {
+        this.pkg = pkg;
+        this.ident = ident;
+        this.reserved = Set.of(pkg.split("\\.")[0], "java");
+    }
+
+    // Generates one file per module, `<package dirs>/<module>.java`, holding a class that
+    // nests every instance of the module. Modules with nothing to emit get no file.
+    Map<String, String> generate(MProgram program) {
+        var modules = new LinkedHashMap<String, List<MDeclaration>>();
+
+        for (var decl : program.declarations()) {
+            modules
+                .computeIfAbsent(moduleOf(decl.instance()), _ ->
+                    new ArrayList<>()
+                )
+                .add(decl);
+
+            if (decl instanceof MAlias a && nativeKind(a) != null) {
+                natives.put(a.instance(), nativeType(a, nativeKind(a)));
+            }
+        }
+
+        assignNames(modules);
+
+        var files = new LinkedHashMap<String, String>();
+
+        for (var entry : modules.entrySet()) {
+            var emitted = entry
+                .getValue()
+                .stream()
+                .filter(d -> !natives.containsKey(d.instance()))
+                .toList();
+
+            if (emitted.isEmpty()) {
+                continue;
+            }
+
+            var holder = holders.get(entry.getKey());
+            files.put(
+                pkg.replace('.', '/') + "/" + holder + ".java",
+                emitModule(holder, emitted)
+            );
+        }
+
+        return files;
+    }
+
+    private static String renamed(String id, Set<String> reserved) {
+        while (reserved.contains(id)) {
+            id = id + "_";
+        }
+
+        return id;
+    }
+
+    private void assignNames(Map<String, List<MDeclaration>> modules) {
+        var files = new HashMap<String, String>();
+
+        for (var module : modules.keySet()) {
+            var holder = renamed(
+                mangler.identifier(pascal(NameMangler.words(module))),
+                reserved
+            );
+            var other = files.putIfAbsent(holder.toLowerCase(), module);
+
+            if (other != null) {
+                throw new CodegenError(
+                    "modules '" +
+                        other +
+                        "' and '" +
+                        module +
+                        "' both become Java file " +
+                        holder +
+                        ".java"
+                );
+            }
+
+            holders.put(module, holder);
+        }
+
+        for (var entry : modules.entrySet()) {
+            var holder = holders.get(entry.getKey());
+            var nested = new HashSet<>(reserved);
+            nested.add(holder);
+
+            var taken = new HashMap<String, Instance>();
+
+            for (var decl : entry.getValue()) {
+                var instance = decl.instance();
+
+                if (natives.containsKey(instance)) {
+                    continue;
+                }
+
+                var name = renamed(
+                    mangler.identifier(pascal(NameMangler.words(instance))),
+                    nested
+                );
+                var other = taken.putIfAbsent(name, instance);
+
+                if (other != null) {
+                    throw new CodegenError(
+                        "'" +
+                            instanceToString(other) +
+                            "' and '" +
+                            instanceToString(instance) +
+                            "' both become Java type " +
+                            pkg +
+                            "." +
+                            holder +
+                            "." +
+                            name
+                    );
+                }
+
+                names.put(instance, name);
+            }
+        }
+    }
+
+    private String qualified(Instance instance) {
+        return (
+            pkg +
+            "." +
+            holders.get(moduleOf(instance)) +
+            "." +
+            names.get(instance)
+        );
+    }
+
+    private String type(MType type, boolean boxed) {
+        return switch (type) {
+            case MRef r when natives.containsKey(r.instance()) -> box(
+                natives.get(r.instance()),
+                boxed
+            );
+            case MRef r -> qualified(r.instance());
+            case MBytes _ -> list("java.lang.Byte");
+            case MBits b -> box(bits(b.size()), boxed);
+            case MArray a -> list(type(a.element(), true));
+            case MSlice s -> list(type(s.element(), true));
+        };
+    }
+
+    // Java names follow its conventions: types are PascalCase and fields are camelCase. Words
+    // keep their case past the first letter, so `IPv4` stays as it is.
+    private static String pascal(List<String> words) {
+        return words
+            .stream()
+            .map(w -> capitalize(w))
+            .collect(Collectors.joining());
+    }
+
+    private static String camel(List<String> words) {
+        var name = pascal(words);
+        return name.isEmpty()
+            ? name
+            : Character.toLowerCase(name.charAt(0)) + name.substring(1);
+    }
+
+    private static String capitalize(String word) {
+        return word.isEmpty()
+            ? word
+            : Character.toUpperCase(word.charAt(0)) + word.substring(1);
+    }
+
+    private static String box(String type, boolean boxed) {
+        return boxed ? boxes.getOrDefault(type, type) : type;
+    }
+
+    private static String list(String element) {
+        return "java.util.List<" + element + ">";
+    }
+
+    private static String bits(int size) {
+        if (size <= 8) return "byte";
+        if (size <= 16) return "short";
+        if (size <= 32) return "int";
+        if (size <= 64) return "long";
+        return "java.util.BitSet";
+    }
+
+    private String nativeType(MAlias alias, String kind) {
+        return switch (kind + " " + nativeSize(alias)) {
+            case "unsigned 1", "signed 1", "char 1" -> "byte";
+            case "unsigned 2", "signed 2" -> "short";
+            case "unsigned 4", "signed 4" -> "int";
+            case "unsigned 8", "signed 8" -> "long";
+            case "float 4" -> "float";
+            case "float 8" -> "double";
+            case "bool 1" -> "boolean";
+            default -> throw noNativeType(alias, "Java");
+        };
+    }
+
+    private String emitModule(String holder, List<MDeclaration> decls) {
+        var writer = new JavaCodeWriter(ident);
+
+        writer.comment("Generated by bajtek. Do not edit.").newline();
+        writer.packageDeclaration(pkg).newline();
+        writer.beginClass("public final ", holder);
+        writer.line("private " + holder + "() {}");
+
+        for (var decl : decls) {
+            writer.newline();
+
+            switch (decl) {
+                case MAlias a -> emitAlias(writer, a);
+                case MStruct s -> emitStruct(writer, s);
+                case MUnion u -> emitUnion(writer, holder, u);
+            }
+        }
+
+        return writer.endClass().code();
+    }
+
+    private void emitAlias(JavaCodeWriter writer, MAlias alias) {
+        writer.record(
+            "public ",
+            names.get(alias.instance()),
+            List.of(type(alias.target(), false) + " value"),
+            null
+        );
+    }
+
+    private void emitStruct(JavaCodeWriter writer, MStruct struct) {
+        var fields = mangler.memberNames(
+            struct.instance(),
+            struct
+                .fields()
+                .stream()
+                .map(f -> camel(NameMangler.words(f.name())))
+                .toList(),
+            recordMethods
+        );
+
+        var components = new ArrayList<String>();
+
+        for (int i = 0; i < fields.size(); i++) {
+            components.add(
+                type(struct.fields().get(i).type(), false) + " " + fields.get(i)
+            );
+        }
+
+        writer.record(
+            "public ",
+            names.get(struct.instance()),
+            components,
+            null
+        );
+    }
+
+    // A union is a sealed interface with one nested record per variant. Nested types cannot have
+    // the name of a type enclosing them.
+    private void emitUnion(JavaCodeWriter writer, String holder, MUnion union) {
+        if (union.variants().isEmpty()) {
+            throw new CodegenError(
+                "'" + instanceToString(union.instance()) + "' has no variants"
+            );
+        }
+
+        var name = names.get(union.instance());
+        var nested = new HashSet<>(reserved);
+        nested.add(holder);
+        nested.add(name);
+
+        var variants = mangler.memberNames(
+            union.instance(),
+            union
+                .variants()
+                .stream()
+                .map(v -> pascal(NameMangler.words(v.name())))
+                .toList(),
+            nested
+        );
+
+        writer.beginSealedInterface("public ", name);
+
+        for (int i = 0; i < variants.size(); i++) {
+            writer.record(
+                "",
+                variants.get(i),
+                List.of(type(union.variants().get(i).type(), false) + " value"),
+                name
+            );
+        }
+
+        writer.endInterface();
     }
 }
 
@@ -2537,6 +3055,7 @@ enum CLIAction {
     RESOLVE,
     MONO,
     CPP,
+    JAVA,
 }
 
 List<Module> loadModulesFromFile(String path) throws IOException {
@@ -2550,12 +3069,31 @@ List<Module> loadModulesFromStdin() throws IOException {
     return new ModuleLoader(Paths.get("")).loadSource(source, "<stdin>");
 }
 
+void writeFiles(Path out, Map<String, String> files) throws IOException {
+    for (var file : files.entrySet()) {
+        var target = out.resolve(file.getKey());
+        Files.createDirectories(target.getParent());
+        Files.writeString(target, file.getValue());
+        System.err.println("wrote " + target);
+    }
+}
+
 void main(String[] args) throws IOException {
     CLIAction mode = CLIAction.RESOLVE;
     String path = null;
+    String out = null;
 
-    for (var arg : args) {
-        if (arg.equals("--ast")) {
+    for (int i = 0; i < args.length; i++) {
+        var arg = args[i];
+
+        if (arg.equals("-o")) {
+            if (++i == args.length) {
+                System.err.println("-o needs an output directory");
+                System.exit(1);
+            }
+
+            out = args[i];
+        } else if (arg.equals("--ast")) {
             mode = CLIAction.AST;
         } else if (arg.equals("--resolve")) {
             mode = CLIAction.RESOLVE;
@@ -2563,12 +3101,21 @@ void main(String[] args) throws IOException {
             mode = CLIAction.MONO;
         } else if (arg.equals("--cpp")) {
             mode = CLIAction.CPP;
+        } else if (arg.equals("--java")) {
+            mode = CLIAction.JAVA;
         } else if (path == null) {
             path = arg;
         } else {
             System.err.println("unexpected argument: " + arg);
             System.exit(1);
         }
+    }
+
+    if ((mode == CLIAction.CPP || mode == CLIAction.JAVA) && out == null) {
+        System.err.println(
+            "code generation needs an output directory, given with -o DIR"
+        );
+        System.exit(1);
     }
 
     try {
@@ -2600,8 +3147,22 @@ void main(String[] args) throws IOException {
                 new KindChecker().check(program);
                 var mono = new Monomorphizer(program).monomorphize();
 
-                System.out.print(
-                    new CppCodeGenerator("bajtek", "    ").generate(mono)
+                writeFiles(
+                    Paths.get(out),
+                    new CppCodeGenerator("bajtek", "    ").generate(
+                        mono,
+                        modules.getLast().name()
+                    )
+                );
+            }
+            case JAVA -> {
+                var program = new Resolver().resolve(modules);
+                new KindChecker().check(program);
+                var mono = new Monomorphizer(program).monomorphize();
+
+                writeFiles(
+                    Paths.get(out),
+                    new JavaCodeGenerator("bajtek", "    ").generate(mono)
                 );
             }
         }
